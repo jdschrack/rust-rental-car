@@ -534,9 +534,9 @@ We won’t add this. Nothing in our code needs to treat vehicles and customers u
 
 Add a trait when a real need appears, such as:
 
-a function that must accept several different types (fn log<T: Identified>(item: &T)),
-a collection of mixed types (Vec<Box<dyn Identified>>), or
-a seam you need for testing, such as a trait around a database or clock.
+- function that must accept several different types (fn log<T: Identified>(item: &T)),
+- a collection of mixed types (Vec<Box<dyn Identified>>), or
+- a seam you need for testing, such as a trait around a database or clock.
 
 Until then, prefer concrete types. We also won’t mirror every struct with an IVehicle-style interface as you might in Java or C#. In Rust it adds code without adding capability, and it’s easy to introduce later if a need appears. 
 

@@ -27,10 +27,7 @@ impl Fleet {
     }
 
     pub fn require(&self, id: u32) -> Result<&Vehicle, FleetError> {
-        match self.find_by_id(id) {
-            Some(vehicle) => Ok(vehicle),
-            None => Err(FleetError::VehicleNotFound),
-        }
+        self.find_by_id(id).ok_or(FleetError::VehicleNotFound)
     }
 
     pub fn available(&self) -> Vec<&Vehicle> {
