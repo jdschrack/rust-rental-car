@@ -511,24 +511,34 @@ mod tests {
 
 **Why `matches!`?** It checks an enum's variant without needing to compare the successful `Vehicle` type, which may not implement `PartialEq`.
 
-## 5. Traits, but not trait obsession
+## 5. Traits: use them when you need them
 
-A trait specifies behavior that *multiple possible types* can provide. Example:
+A trait describes behavior that several types can share, so code can work with any of them generically. For example:
 
 ```rust
-// ILLUSTRATION
+// ILLUSTRATION ONLY: not part of our codebase
 trait Identified {
     fn id(&self) -> u32;
 }
 
 impl Identified for Vehicle {
     fn id(&self) -> u32 {
+        // Calls Vehicle's inherent `id()` getter (inherent methods
+        // take priority), not this trait method.
         self.id()
     }
 }
 ```
 
-Why **not** use this in every file? This abstraction offers little if nothing actually needs generic access to vehicle/customer IDs. Prefer concrete types until you have a real substitution or generic algorithm. We will not build an unnecessary `IVehicle` abstraction because that resembles patterns from other languages.
+We won’t add this. Nothing in our code needs to treat vehicles and customers uniformly by ID, so the trait would only add a layer between callers and Vehicle::id(). Callers can use the concrete type and its getter directly.
+
+Add a trait when a real need appears, such as:
+
+a function that must accept several different types (fn log<T: Identified>(item: &T)),
+a collection of mixed types (Vec<Box<dyn Identified>>), or
+a seam you need for testing, such as a trait around a database or clock.
+
+Until then, prefer concrete types. We also won’t mirror every struct with an IVehicle-style interface as you might in Java or C#. In Rust it adds code without adding capability, and it’s easy to introduce later if a need appears. 
 
 ## 6. Error-design exercise
 
