@@ -1,4 +1,4 @@
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Customer {
     id: u32,
     name: String,
@@ -32,5 +32,39 @@ impl Customer {
     }
     pub fn email(&self) -> &str {
         &self.email
+    }
+}
+
+#[cfg(test)]
+mod customer_tests {
+    use super::*;
+
+    #[test]
+    fn reject_invalid_emaill() {
+        let result = Customer::new(1, "Foo Bar".into(), "".into());
+        assert!(matches!(result, Err(CustomerError::InvalidEmail)))
+    }
+
+    #[test]
+    fn reject_invalid_name() {
+        let result = Customer::new(1, "".into(), "foo@bar.com".into());
+        assert!(matches!(result, Err(CustomerError::EmptyName)))
+    }
+
+    #[test]
+    fn valid_cuustomer_returns_expected_values() {
+        let name: String = "foo bar".into();
+        let email: String = "foo@bar.com".into();
+
+        let result = match Customer::new(1, name.clone(), email.clone()) {
+            Ok(result) => result,
+            Err(error) => {
+                panic!("Expected Ok, but got error: {:?}", error);
+            }
+        };
+
+        assert!(result.email().eq(&email.to_string()));
+        assert!(result.name().eq(&name.to_string()));
+        assert!(result.id().eq(&1));
     }
 }

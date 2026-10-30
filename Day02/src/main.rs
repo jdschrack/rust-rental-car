@@ -20,8 +20,14 @@ fn main() {
         car.display();
     }
 
-    match fleet.find_by_id(2) {
+    match fleet.find(2) {
         Some(car) => println!("Found {} {}", car.make(), car.model()),
         None => println!("Not found"),
+    }
+
+    let in_budget = fleet.affordable(9000);
+
+    for car in in_budget {
+        println!("{} {} {} is in range", car.id(), car.make(), car.model());
     }
 }

@@ -1,4 +1,4 @@
-use crate::vehicle::Vehicle;
+use crate::vehicle::{self, Vehicle};
 
 #[derive(Default, Debug)]
 pub struct Fleet {
@@ -18,7 +18,7 @@ impl Fleet {
         &self.vehicles
     }
 
-    pub fn find_by_id(&self, id: u32) -> Option<&Vehicle> {
+    pub fn find(&self, id: u32) -> Option<&Vehicle> {
         self.vehicles.iter().find(|vehicle| vehicle.id() == id)
     }
 
@@ -26,6 +26,13 @@ impl Fleet {
         self.vehicles
             .iter()
             .filter(|vehicle| vehicle.is_rentable())
+            .collect()
+    }
+
+    pub fn affordable(&self, maximum_cents: i64) -> Vec<&Vehicle> {
+        self.vehicles
+            .iter()
+            .filter(|vehicle| vehicle.daily_rate_cents() < maximum_cents)
             .collect()
     }
 }
