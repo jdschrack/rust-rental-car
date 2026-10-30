@@ -26,6 +26,29 @@ Every module uses the same loop:
 
 Code is identified as **FULL FILE** (copyable), **ADD** (paste into an existing file), **ILLUSTRATION** (not a complete program), or **EXPECTED COMPILER ERROR** (intentionally invalid). When adding files, paths are relative to your project root.
 
+
+## Course contract: what “complete” means
+
+This is a **beginner-first learning course**, not a source dump. Seven days are seven modules; a first-time programmer may spend multiple sessions on each. **Do not advance while an earlier checkpoint fails.** Every day has three distinct categories:
+
+- **Required build:** files and commands needed for that day's checkpoint, with exact paths. These are never left to guesswork.
+- **Discovery exercise:** a deliberately open implementation choice, always specifying the starting point, expected behavior, and way to verify it.
+- **Optional extension:** may require further reading and is not a prerequisite for later days.
+
+When you encounter **ILLUSTRATION**, do not paste it into the project expecting it to compile by itself. If a lesson requests a new function but doesn't supply every line, it must give a signature, test expectation, and hints. If a later day depends on an exercise, it is **required**, not optional.
+
+### What a “service” means in this course
+
+A **domain object** (e.g. `Vehicle`) owns rules about one object. A **collection** (e.g. `Fleet`) owns a set of objects and search/add operations. A **service** coordinates multiple objects in one business operation (e.g. making a reservation for a customer and vehicle). A **repository** reads and writes persistent data. An **HTTP handler** parses requests and returns responses. These boundaries are useful here, not universal rules for all Rust programs.
+
+**There is no `RentalService` in Days 1–6.** Day 3 discusses what its error type could look like *later*, but does not require implementing it. Day 7 first explains the service's responsibilities, then invites an explicit capstone. We will never tell you to complete an unspecified future operation.
+
+### Quality and reproducibility
+
+Treat the snippets as **documentation-reviewed, not compiler-certified** until a CI run verifies each day. Evidence-backed claims link to their primary sources in Appendix B. Where a design choice is an opinion or simplification, it is labeled. For an executable course release, retain a passing source snapshot and `Cargo.lock` for every checkpoint. Do not claim the course is fully runnable until that evidence exists.
+
+**Common Rust misunderstandings:** `pub struct` does not make its fields public; `use` does not grant visibility; `filter` returns an iterator, `find` returns an `Option`; `clone` may allocate; and `?` propagates errors but does not catch panics. We revisit these as they arise.
+
 ## Learning roadmap
 
 | Day | Primary lesson | RustRent feature | Must explain before proceeding |
@@ -274,11 +297,119 @@ Use moves when handing off ownership, borrows for observation, and clones when *
 
 You may have multiple concurrent `&T` immutable borrows, or one active `&mut T` mutable borrow, but not conflicting borrows at the same time. These rules help prevent data races. **Lifetimes** describe how long a reference must remain valid relative to borrowed data. Most lifetimes here are inferred; explicit annotations arrive when you write functions returning borrowed data.
 
-## 2. Introduce slices
+## 2. Refactor into modules without losing the domain model
 
-A `Vec<Vehicle>` owns elements. A `&[Vehicle]` borrows a consecutive view of some elements; it can accept vectors and arrays. Functions that only *read* a collection should generally prefer slices to `&Vec<T>`.
+**Starting point:** Day 1's complete `src/main.rs` compiles and uses `Vehicle`, `VehicleStatus` and `VehicleError`.
 
-Create `src/fleet.rs` (**FULL FILE**) after moving the definitions from Day 1 into `src/vehicle.rs`:
+**Goal:** extract those same types and their methods to `src/vehicle.rs`, add a `Fleet` collection, and have `main.rs` use both. This is a move of existing behavior, **not** a replacement with a data-only struct.
+
+### Why modules change visibility
+
+Rust items are private by default to code outside their module. Making a type `pub` does **not** make its fields or its methods public. The compiler checks each boundary separately. Prefer **private fields with purposeful methods** for a type with validated invariants; direct public fields are fine for simple transport data.
+
+Create `src/vehicle.rs` (**FULL FILE**):
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VehicleStatus {
+    Ready,
+    Maintenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VehicleError {
+    EmptyMake,
+    EmptyModel,
+    InvalidRate,
+    UnderMaintenance,
+}
+
+#[derive(Debug, Clone)]
+pub struct Vehicle {
+    id: u32,
+    make: String,
+    model: String,
+    year: u16,
+    daily_rate_cents: i64,
+    status: VehicleStatus,
+}
+
+impl Vehicle {
+    pub fn new(
+        id: u32,
+        make: String,
+        model: String,
+        year: u16,
+        daily_rate_cents: i64,
+    ) -> Result<Self, VehicleError> {
+        if make.trim().is_empty() {
+            return Err(VehicleError::EmptyMake);
+        }
+        if model.trim().is_empty() {
+            return Err(VehicleError::EmptyModel);
+        }
+        if daily_rate_cents <= 0 {
+            return Err(VehicleError::InvalidRate);
+        }
+        Ok(Self {
+            id,
+            make,
+            model,
+            year,
+            daily_rate_cents,
+            status: VehicleStatus::Ready,
+        })
+    }
+
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    pub fn make(&self) -> &str {
+        &self.make
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn year(&self) -> u16 {
+        self.year
+    }
+
+    pub fn daily_rate_cents(&self) -> i64 {
+        self.daily_rate_cents
+    }
+
+    pub fn is_rentable(&self) -> bool {
+        self.status == VehicleStatus::Ready
+    }
+
+    pub fn put_into_maintenance(&mut self) {
+        self.status = VehicleStatus::Maintenance;
+    }
+
+    pub fn mark_ready(&mut self) {
+        self.status = VehicleStatus::Ready;
+    }
+
+    pub fn display(&self) {
+        println!(
+            "#{}: {} {} ({}), {} cents/day, {:?}",
+            self.id,
+            self.make,
+            self.model,
+            self.year,
+            self.daily_rate_cents,
+            self.status
+        );
+    }
+}
+```
+
+**Design note:** `UnderMaintenance` is retained as an illustrative typed error for a future operation; merely checking `is_rentable()` produces a Boolean. We don't pretend the error is returned today. Keeping unused public enum variants is fine in this teaching model; do not add dummy handling to silence warnings.
+
+Create `src/fleet.rs` (**FULL FILE**):
 
 ```rust
 use crate::vehicle::Vehicle;
@@ -314,34 +445,9 @@ impl Fleet {
 }
 ```
 
-The `find` result is an `Option<&Vehicle>` because missing vehicles are normal, not necessarily errors. The `available` method returns *references*, not copied vehicles. Rust infers that those references cannot outlive the borrowed fleet.
+**Why these methods?** `add` consumes a `Vehicle` (the fleet becomes its owner). `all` borrows a slice without copying. `find` yields zero or one borrowed match (`Option<&Vehicle>`), while `filter` yields an iterator of all matching elements; `collect` materializes those references into `Vec<&Vehicle>`. Don't substitute `filter` for `find`: their return types differ.
 
-## 3. Visibility and explicit public API
-
-Create `src/vehicle.rs` by moving the Day 1 `VehicleStatus`, `Vehicle`, `VehicleError`, and `impl Vehicle` into the file. **Keep their implementations.** Add `pub` to the three type declarations and constructor/methods used outside that module. Keep vehicle fields **private** and add accessors:
-
-```rust
-// ADD inside impl Vehicle in src/vehicle.rs
-pub fn id(&self) -> u32 {
-    self.id
-}
-
-pub fn make(&self) -> &str {
-    &self.make
-}
-
-pub fn model(&self) -> &str {
-    &self.model
-}
-
-pub fn daily_rate_cents(&self) -> i64 {
-    self.daily_rate_cents
-}
-```
-
-Why private? If callers could freely change `daily_rate_cents` to `-10`, the constructor's invariant would be meaningless. Expose operations intentionally. To make the Day 1 constructor accessible, change its signature to `pub fn new`; likewise `pub fn is_rentable`, `pub fn display`, `pub fn put_into_maintenance`, and `pub fn mark_ready` if you added it. Keep the other field names unchanged.
-
-Replace `src/main.rs` (**FULL FILE**) with:
+Replace `src/main.rs` (**FULL FILE**):
 
 ```rust
 mod fleet;
@@ -352,10 +458,14 @@ use vehicle::Vehicle;
 
 fn main() {
     let mut fleet = Fleet::new();
-    fleet.add(Vehicle::new(1, "Toyota".into(), "Camry".into(), 2025, 6500)
-        .expect("seed vehicle is valid"));
-    fleet.add(Vehicle::new(2, "Jeep".into(), "Wrangler".into(), 2026, 14000)
-        .expect("seed vehicle is valid"));
+    fleet.add(
+        Vehicle::new(1, "Toyota".into(), "Camry".into(), 2025, 6500)
+            .expect("valid example vehicle"),
+    );
+    fleet.add(
+        Vehicle::new(2, "Jeep".into(), "Wrangler".into(), 2026, 14000)
+            .expect("valid example vehicle"),
+    );
 
     for car in fleet.available() {
         car.display();
@@ -363,42 +473,43 @@ fn main() {
 
     match fleet.find(2) {
         Some(car) => println!("Found {} {}", car.make(), car.model()),
-        None => println!("Not found"),
+        None => println!("Vehicle not found"),
     }
 }
 ```
 
-**Why `mod` and `use`?** `mod vehicle;` tells the compiler to include the module defined in `vehicle.rs`. `use vehicle::Vehicle;` brings its type name into scope. `pub` controls access *across module boundaries*; it is not inheritance or a property getter generator.
+`mod` declares the module; `use` imports a name into scope; `pub` decides whether it is accessible. We only use `expect` for deterministic seed data—not for handling arbitrary input in HTTP handlers.
 
-### Understanding closures and iterators
+### Visibility experiment (deliberately break, then restore)
 
-`iter()` creates an iterator over borrowed elements; `filter(|vehicle| ...)` uses a closure, an inline function-like value, to select items; `collect()` builds a collection of references. It is equally idiomatic to write a `for` loop when that is clearer. Avoid using iterator chains solely to appear sophisticated.
+1. Remove `pub` from `struct Vehicle`. Run `cargo check` and find the privacy diagnostic; restore.
+2. Remove `pub` from `Vehicle::new`. The type is accessible, but constructing it from `main` is not; restore.
+3. Try `car.make` rather than `car.make()` in `main`. The field is private; the public method is available.
+4. Compare returning `&str` from a getter with returning a cloned `String`. The former borrows from the vehicle; it cannot outlive that vehicle.
 
-### Checkpoint and exercises
+### Day 2 exercises
 
-`cargo fmt && cargo check && cargo run && cargo test`
+**Required:** In `src/fleet.rs`, write `pub fn affordable(&self, maximum_cents: i64) -> Vec<&Vehicle>`. Test it by printing the IDs of vehicles priced below 10,000 cents/day in `main.rs`. Expected: the Camry appears, the Wrangler does not. **Hint:** `iter().filter(...).collect()` and `Vehicle::daily_rate_cents()`.
 
-1. Add one vehicle, then print `fleet.all().len()`.
-2. Return references to only vehicles costing less than 10,000 cents/day.
-3. **EXPECTED COMPILER ERROR:** Try keeping an immutable reference from `fleet.find(1)` alive while calling `fleet.add(...)`, then using that reference. Explain the conflict and rewrite so the reference's final use occurs before `add`.
-4. Compare `Vec<&Vehicle>` with `Vec<Vehicle>`. When would you choose the latter?
+**Discovery:** Create a program that keeps a borrowed result from `fleet.find(1)`, then tries to modify the fleet with `add` before the borrow's last use. Observe the borrow-checker diagnostic. Rearrange the last use to make the code compile. Explain *why* it becomes valid.
 
-**Hints:** `.iter().filter(...).collect()`; Rust checks last uses rather than simply lexical scopes. An owned `Vec<Vehicle>` may be needed when values must outlive the fleet, but cloning could be required.
-
-**Worked answer for 2:**
+**Worked solution for required exercise:**
 
 ```rust
-// ADD inside impl Fleet
+// ADD inside impl Fleet, in src/fleet.rs
 pub fn affordable(&self, maximum_cents: i64) -> Vec<&Vehicle> {
-    self.vehicles.iter()
+    self.vehicles
+        .iter()
         .filter(|vehicle| vehicle.daily_rate_cents() < maximum_cents)
         .collect()
 }
 ```
 
-**Explain it back:** Why is `all(&self) -> &[Vehicle]` more flexible than returning `&Vec<Vehicle>`? What will happen if the fleet is dropped while a returned reference is still being used?
+**Checkpoint:** `cargo fmt && cargo check && cargo run && cargo test`. No private-access or mismatched-iterator-type errors. Explain the difference between owned `Vec<Vehicle>` and borrowed `Vec<&Vehicle>`.
 
 ---
+
+
 
 # Day 3 — Express business rules with types, errors and tests
 
@@ -540,9 +651,18 @@ Add a trait when a real need appears, such as:
 
 Until then, prefer concrete types. We also won’t mirror every struct with an IVehicle-style interface as you might in Java or C#. In Rust it adds code without adding capability, and it’s easy to introduce later if a need appears. 
 
-## 6. Error-design exercise
+## 6. Error-design lab: now versus later
 
-Introduce a `RentalError` enum when you implement rental service operations, rather than returning `String`. Choose variants based on expected failures (`VehicleNotFound`, `CustomerNotFound`, `OverlappingReservation`, `VehicleUnavailable`). **Keep error enums at the layer that owns their meaning.** HTTP status codes do not belong inside the domain error enum.
+**Where you are:** Day 3 has `Vehicle`, `Fleet`, and `Customer`. It does **not** have a reservation service, database, or HTTP routes yet.
+
+**Required now:** `Fleet::require(id) -> Result<&Vehicle, FleetError>` is the only new service-like lookup. `FleetError` belongs in `src/fleet.rs` because `Fleet` owns the lookup. Don't create `RentalService` yet.
+
+**Illustration of a future design (not an assignment today):** On Day 7 we introduce reservation operations such as `create_reservation(vehicle_id, customer_id, start_date, end_date)` and cancellation. Those operations will need an error representing “vehicle not found,” “customer not found,” “date conflict,” and “vehicle under maintenance.” An enum named `RentalError` would be a reasonable choice. It should **not** contain HTTP status numbers: the domain does not know whether its caller is HTTP, CLI, or a test.
+
+**Discovery question (optional, no implementation required):** Should `VehicleNotFound` include the requested ID? What becomes easier to log or test if it does? Write a proposed enum on paper. We'll revisit this only once the reservation operation actually exists.
+
+**Why not assign it now?** A type without an operation that returns it is speculative architecture, not a lesson in `Result`. The Day 3 checkpoint requires only the real `FleetError` exercise below.
+
 
 ### Checkpoint
 
@@ -552,7 +672,7 @@ Introduce a `RentalError` enum when you implement rental service operations, rat
 
 1. Write two tests for `Customer::new` (valid and invalid email).
 2. Implement `Fleet::require(id) -> Result<&Vehicle, FleetError>` using `ok_or`.
-3. Refactor one explicit `match` over a `Result` into a `?` expression inside a function that itself returns `Result`.
+3. In `src/main.rs`, add `fn example_vehicle() -> Result<Vehicle, VehicleError>` that calls `Vehicle::new(...)` with `?` and returns `Ok(vehicle)`. Import `VehicleError` from `vehicle` and call the function from `main` with a `match`. Expected: valid data yields `Ok`, invalid rate yields `Err(InvalidRate)`.
 4. Explain the difference between an inherent method (`impl Vehicle`) and a trait implementation (`impl SomeTrait for Vehicle`).
 
 **Worked answer for exercise 2:**
@@ -1179,7 +1299,29 @@ The conversion from `i64` to `u32` / `u16` is **fallible**: database values can 
 
 ## 6. A deliberately narrow migration checkpoint
 
-To avoid a giant "replace everything" step, Day 6 keeps the in-memory HTTP code from Day 5 running while you **independently prove the database layer**. Add `pub mod database; pub mod repository;` to `lib.rs`. Add an integration test to `tests/database.rs` that connects, runs migrations and calls `VehicleRepository::list()`. Start with an empty DB; it should return an empty vector. Insert a row using `sqlite3 rust_rent.db` or SQLx and run again. Do not pretend you have migrated all CRUD handlers yet.
+To avoid a giant "replace everything" step, Day 6 keeps the in-memory HTTP code from Day 5 running while you **independently prove the database layer**. Add `pub mod database; pub mod repository;` to `lib.rs`. Add the **complete test below** to `tests/database.rs`. Start with a fresh test database; it must return an empty vector. Do not use the main application database in tests. Insert a row using `sqlite3 rust_rent.db` or SQLx and run again. Do not pretend you have migrated all CRUD handlers yet.
+
+**Required Day 6 test (FULL FILE `tests/database.rs`):**
+
+```rust
+use rust_rent::database;
+use rust_rent::repository::VehicleRepository;
+
+#[tokio::test]
+async fn newly_created_database_contains_no_vehicles() {
+    // Day 6's connect() uses a fixed local path; ensure the application
+    // is stopped and run this only with a fresh rust_rent.db.
+    let pool = database::connect().await.expect("database and migrations");
+    let repository = VehicleRepository::new(pool);
+    let vehicles = repository.list().await.expect("valid database rows");
+    assert!(
+        vehicles.is_empty(),
+        "this test needs a clean database; remove rust_rent.db before running"
+    );
+}
+```
+
+**Important test-design limitation:** This beginner checkpoint uses the fixed `rust_rent.db` path and is **not isolated**; it will fail if you have existing vehicles, and running tests concurrently with the application is unsafe for this lesson. Stop the server and create a fresh database first. A stronger design makes `connect(database_url)` configurable and creates a temporary database per test; treat that as the required next refinement before publishing reusable CI tests.
 
 Sample smoke commands after you have run the connection once:
 
@@ -1203,7 +1345,7 @@ sqlite3 rust_rent.db 'SELECT * FROM vehicles;'
 
 # Day 7 — Reservations, transactions and the full API design
 
-**Outcome:** You implement time-based booking rules and understand the persistence boundary. This is the **largest module**; allow extra sessions.
+**Outcome:** You learn and unit-test booking rules and understand transaction boundaries. Fully wiring the SQL-backed booking HTTP API is explicitly an advanced capstone requiring additional implementation guidance. This is the **largest module**; allow extra sessions.
 
 ## 1. What makes reservations harder than vehicles?
 
@@ -1357,7 +1499,7 @@ Be precise about Axum's defaults: malformed JSON and wrong content types can hav
 
 ## 5. The required integration checklist
 
-**This final integration is a capstone implementation assignment.** The fully wired SQL-backed vehicle/customer/reservation HTTP implementation is *not* silently provided in the snippets above. To call the project completed, implement and verify all these items:
+**This final integration is an advanced capstone, **not** a guided beginner checkpoint. The course currently does **not** supply the complete SQL-backed HTTP handlers, repository writes, cancellation handler, or integration tests required to complete it independently. Do not present Day 7 as a finished working API without an additional guided implementation and passing test suite.** The fully wired SQL-backed vehicle/customer/reservation HTTP implementation is *not* silently provided in the snippets above. To call the project completed, implement and verify all these items:
 
 - [ ] The running server initializes `SqlitePool` and migrations before binding the socket.
 - [ ] Vehicle GET/POST are backed by SQLx rather than the temporary `Fleet` mutex.
@@ -1432,6 +1574,21 @@ Explain: a car can be operational but already reserved on certain dates. Checkin
 - **Axum docs** — https://docs.rs/axum/0.8/axum/ — routes, extractors, `State`, JSON and responses.
 - **Tokio tutorial** — https://tokio.rs/tokio/tutorial — futures, async runtime, tasks and shared-state patterns.
 - **SQLx 0.9 docs** — https://docs.rs/sqlx/0.9.0/sqlx/ — pools, queries, migrations and transactions.
+
+
+## Evidence and design-decision ledger (reviewed 29 October 2026)
+
+| Claim or decision | Evidence | Course interpretation |
+|---|---|---|
+| Modules are private by default; `pub` exposes items | [Rust Book: modules and paths](https://doc.rust-lang.org/book/ch07-03-paths-for-referring-to-an-item-in-the-module-tree.html) | Explain separate visibility of module, type, methods and fields |
+| Ownership, borrowing, and references | [Rust Book: ownership](https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html), [references](https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html) | Teach by predicting compiler errors before moving values |
+| `Option`, `Result` and `?` | [Rust Book: recoverable errors](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html) | Convert absence to an error only when the operation requires a record |
+| Integration tests live in `tests/` | [Rust Book: test organization](https://doc.rust-lang.org/book/ch11-03-test-organization.html) | Exercise exact `lib.rs` exports, not just unconnected snippets |
+| Axum `Json` must be last extractor | [Axum extractor documentation](https://docs.rs/axum/0.8/axum/extract/index.html#the-order-of-extractors) | Body-consuming extractor comes after `State` or `Path` |
+| SQLx supports pool, migrations, prepared bound queries | [SQLx 0.9 reference](https://docs.rs/sqlx/0.9.0/sqlx/) | Use SQL literals and bind input values |
+| SQLite transaction / SQLx `begin_with` | [SQLx Pool API](https://docs.rs/sqlx/0.9.0/sqlx/struct.Pool.html) | Atomic check-and-insert for this local SQLite service; do not promise perfect cancellation safety |
+| Domain/service/repository layering | **Teaching design choice**, not a rule imposed by Rust | Avoid claiming it is the single idiomatic architecture |
+| Half-open booking ranges | **Course business rule** | Allows a booking to start on the prior booking's end day; not a language guarantee |
 
 # Appendix C — Common beginner stumbling blocks
 
