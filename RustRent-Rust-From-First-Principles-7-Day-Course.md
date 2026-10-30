@@ -694,21 +694,56 @@ pub fn require(&self, id: u32) -> Result<&Vehicle, FleetError> {
 
 ---
 
-# Day 4 — HTTP and asynchronous Rust, without discarding the domain
+# Day 4 — From domain model to HTTP: async, shared state, Serde, and Axum
 
-**Outcome:** Your existing vehicle domain powers a JSON web API. HTTP handlers are adapters, not the owners of business rules.
+**Outcome:** Run an HTTP API without discarding the `Vehicle` model. You will understand what each new abstraction solves *before* combining it with the server.
 
-## 1. What changes when we add a server?
+**Starting point:** Day 3's `src/vehicle.rs`, `src/fleet.rs`, and `src/customer.rs` exist and `cargo test` passes. The fleet owns vehicles; vehicle fields remain private. Today **only** `GET /health`, `GET /vehicles`, and `POST /vehicles` are required; Day 5 expands the API.
 
-The request lifecycle is: client JSON → deserialize request into input DTO → call domain constructor/rule → serialize a response. Axum's job is HTTP; Serde's job is data representation; Tokio's job is running asynchronous tasks. **None of them replaces `Vehicle::new` or `Vehicle::is_rentable`.**
+**Estimated time:** This module may take multiple sessions. The source listings below are complete for every *new* file. Any existing domain file not explicitly changed remains unchanged.
 
-### Async mental model
+## 1. What problem does asynchronous Rust solve?
 
-`async fn` returns a future. `.await` yields while an asynchronous operation completes; it does not create a thread per request. A value held across `.await` may need to satisfy thread-safety (`Send`) requirements. `Arc<T>` shares ownership safely; a mutex protects simultaneous mutable access. Do not hold `std::sync::MutexGuard` across `.await` in an Axum handler. Prefer short lock scopes or, on Day 6, a database pool.
+A server spends time waiting for network I/O. If one request is waiting for data, an async runtime can poll other ready tasks rather than dedicating a blocked OS thread to each wait. An `async fn` produces a **future**, a value describing work that can be polled. Calling an async function alone does not execute it to completion. `.await` waits for its future to finish while allowing the executor to schedule other work. It does not automatically spawn a thread or guarantee parallel execution.
 
-## 2. Add dependencies
+**Temporary experiment:** create a separate scratch project, *outside RustRent*, with `cargo new async-experiment`; in it run `cargo add tokio@1 --features full`. Replace its `src/main.rs` with:
 
-From project root:
+```rust
+use tokio::time::{sleep, Duration};
+
+async fn greet() {
+    println!("Before waiting");
+    sleep(Duration::from_millis(100)).await;
+    println!("After waiting");
+}
+
+#[tokio::main]
+async fn main() {
+    let future = greet();
+    println!("Future created");
+    future.await;
+}
+```
+
+Predict the output *before* running `cargo run`. You should see “Future created” before “Before waiting.” Why? `greet()` constructs a future; awaiting it drives it. In this experiment, the runtime is supplied by the `#[tokio::main]` attribute. Return to the `rust-rent` project afterward.
+
+**Discovery:** remove `future.await`; predict whether the greeting prints. Then restore it. Read [The Rust Book on futures and async](https://doc.rust-lang.org/book/ch17-00-async-await.html) and [Tokio's tutorial](https://tokio.rs/tokio/tutorial) if the result surprises you.
+
+## 2. Why state must be shared
+
+Each HTTP request invokes a handler. If each handler creates its own `Fleet`, one request could create a vehicle and the next would see an empty collection. We need a shared, in-memory fleet *for this stage of the course*.
+
+`Arc<T>` (atomically reference-counted ownership) lets independently owned handles refer to the same allocation; cloning an `Arc` does **not** clone the entire fleet. `Mutex<T>` permits one task/thread at a time to mutate the enclosed value. `lock()` returns a guard, which unlocks the mutex when dropped.
+
+**Small mental exercise:** `Arc<Mutex<Fleet>>` is three different jobs: `Fleet` contains domain data; `Mutex` synchronizes access; `Arc` allows multiple owners of the same synchronized allocation.
+
+For handlers below, locking is brief and no `.await` happens while a `std::sync::MutexGuard` is held. A synchronous mutex is acceptable for this short in-memory critical section. Holding that guard across `.await` in a multithreaded handler can make the future non-`Send` or cause contention/deadlock. We will use a database pool later, not an indefinitely growing shared-memory lock.
+
+**Experiment (optional, not required for the app):** in a scratch program, clone an `Arc<Mutex<Vec<i32>>>`, push to the vector through one clone, then read through the other. Explain why both see the same vector.
+
+## 3. Add HTTP and JSON dependencies
+
+From the `rust-rent` project root:
 
 ```bash
 cargo add axum@0.8
@@ -717,35 +752,102 @@ cargo add serde@1 --features derive
 cargo add serde_json@1
 ```
 
-These commands create/modify Cargo.toml. Read the resulting feature flags. Preserve `Cargo.lock`.
+**Why these crates?** Tokio schedules async I/O; Axum routes HTTP requests and extracts parameters/body; Serde serializes Rust data to formats such as JSON and deserializes requests into Rust types; `serde_json` provides the JSON format implementation. Versions shown correspond to this course's API examples, not a claim that they are permanently newest.
 
-## 3. Move to a library + small binary
+### Serde experiment before HTTP
 
-A `lib.rs` module lets integration tests reuse the application. Move `src/vehicle.rs`, `src/fleet.rs`, `src/customer.rs` unchanged. Create `src/lib.rs` (**FULL FILE**):
+Create `src/bin/json_experiment.rs` (**FULL FILE**; `src/bin` is a directory that Cargo treats as another executable):
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Example {
+    make: String,
+    year: u16,
+}
+
+fn main() -> Result<(), serde_json::Error> {
+    let car = Example {
+        make: "Toyota".into(),
+        year: 2025,
+    };
+    let json = serde_json::to_string(&car)?;
+    println!("{json}");
+    let decoded: Example = serde_json::from_str(&json)?;
+    println!("{decoded:?}");
+    Ok(())
+}
+```
+
+Run `cargo run --bin json_experiment`. Expected first line: `{"make":"Toyota","year":2025}`. `Serialize` means a type can be turned into a format; `Deserialize` means a type can be built from input. Derive macros generate the boilerplate. `?` propagates conversion errors as you learned on Day 3. Leave this file in place; when the package has multiple binaries, **use `cargo run --bin rust-rent`** to start the server.
+
+## 4. Create a library crate without moving files
+
+**Do not move `src/vehicle.rs`, `src/fleet.rs`, or `src/customer.rs`.** They're already in the correct directory. We are changing *which crate root declares the modules*, not relocating them.
+
+Before Day 4:
+```text
+src/
+  main.rs       (contains mod vehicle; mod fleet; mod customer;)
+  vehicle.rs
+  fleet.rs
+  customer.rs
+```
+
+Create `src/lib.rs` (**FULL FILE**):
 
 ```rust
 pub mod customer;
 pub mod fleet;
 pub mod vehicle;
+pub mod api;
 ```
 
-Remove `mod fleet; mod vehicle; mod customer;` from `main.rs`. Use `use rust_rent::...` to reference public library modules; Cargo converts package `rust-rent` to Rust crate identifier `rust_rent`.
+The `api` module will be created in the next step. **Remove** `mod vehicle;`, `mod fleet;`, and `mod customer;` declarations from `src/main.rs` when you replace it below. The library's `lib.rs` now declares these modules once. `main.rs` uses `rust_rent::...` to import them from the library. Package name `rust-rent` becomes the crate identifier `rust_rent` under normal Cargo conventions.
 
-## 4. Serialize explicit HTTP responses
+Rust visibility still applies: `pub mod vehicle` allows external code to name the module, but individual fields remain private. We already exposed purposeful methods such as `Vehicle::make()` and `Vehicle::year()` on Day 2. **Do not add `year()` a second time.**
 
-Do not make every domain field public to satisfy JSON. Define a representation in `src/api.rs`. To do that cleanly, add a getter to `Vehicle`:
+## 5. Why HTTP request and response types differ from domain types
+
+Our domain `Vehicle` validates its own construction and hides fields. A JSON request should not be able to assign an ID or physical status arbitrarily. Therefore:
+
+- `CreateVehicle` describes what a client can submit.
+- `VehicleResponse` describes what clients can read.
+- `Vehicle` remains the authoritative validated domain model.
+
+Before using it in a handler, learn the standard library's `From` trait:
 
 ```rust
-// ADD inside impl Vehicle in src/vehicle.rs
-pub fn year(&self) -> u16 { self.year }
+// ILLUSTRATION: this is not a standalone file.
+struct Dollars(i64);
+struct Cents(i64);
+
+impl From<Dollars> for Cents {
+    fn from(value: Dollars) -> Self {
+        Cents(value.0 * 100)
+    }
+}
+
+let cents = Cents::from(Dollars(5));
 ```
+
+`From<Source> for Target` describes an *infallible* conversion that can always produce the target value. When a conversion can fail, prefer `TryFrom`. For our API, converting `&Vehicle` into an owned `VehicleResponse` cannot fail. The reference means we **borrow** the vehicle; its strings are duplicated into the response so the JSON can outlive the lock guard. That deliberate allocation is different from arbitrarily cloning the entire domain object.
+
+## 6. Implement the HTTP module
 
 Create `src/api.rs` (**FULL FILE**):
 
 ```rust
-use axum::{extract::State, http::StatusCode, routing::get, Json, Router};
-use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
+
+use axum::{
+    extract::State,
+    http::StatusCode,
+    routing::get,
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
 
 use crate::fleet::Fleet;
 use crate::vehicle::Vehicle;
@@ -769,14 +871,14 @@ pub struct VehicleResponse {
 }
 
 impl From<&Vehicle> for VehicleResponse {
-    fn from(v: &Vehicle) -> Self {
+    fn from(vehicle: &Vehicle) -> Self {
         Self {
-            id: v.id(),
-            make: v.make().to_owned(),
-            model: v.model().to_owned(),
-            year: v.year(),
-            daily_rate_cents: v.daily_rate_cents(),
-            rentable: v.is_rentable(),
+            id: vehicle.id(),
+            make: vehicle.make().to_owned(),
+            model: vehicle.model().to_owned(),
+            year: vehicle.year(),
+            daily_rate_cents: vehicle.daily_rate_cents(),
+            rentable: vehicle.is_rentable(),
         }
     }
 }
@@ -796,9 +898,12 @@ pub fn router(state: AppState) -> Router {
 async fn list_vehicles(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<VehicleResponse>>, StatusCode> {
-    let fleet = state.fleet.lock()
+    let fleet = state
+        .fleet
+        .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let items = fleet.all().iter().map(VehicleResponse::from).collect();
+    let items: Vec<VehicleResponse> =
+        fleet.all().iter().map(VehicleResponse::from).collect();
     Ok(Json(items))
 }
 
@@ -806,23 +911,50 @@ async fn create_vehicle(
     State(state): State<AppState>,
     Json(input): Json<CreateVehicle>,
 ) -> Result<(StatusCode, Json<VehicleResponse>), StatusCode> {
-    let mut fleet = state.fleet.lock()
+    // Input is deserialized before the handler runs. Domain validation
+    // remains in Vehicle::new rather than duplicated in HTTP code.
+    let mut fleet = state
+        .fleet
+        .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let next_id = fleet.all().iter().map(|v| v.id()).max()
-        .unwrap_or(0).checked_add(1)
+
+    let next_id = fleet
+        .all()
+        .iter()
+        .map(|vehicle| vehicle.id())
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+
     let vehicle = Vehicle::new(
-        next_id, input.make, input.model, input.year, input.daily_rate_cents
-    ).map_err(|_| StatusCode::BAD_REQUEST)?;
+        next_id,
+        input.make,
+        input.model,
+        input.year,
+        input.daily_rate_cents,
+    )
+    .map_err(|_| StatusCode::BAD_REQUEST)?;
+
     let response = VehicleResponse::from(&vehicle);
     fleet.add(vehicle);
     Ok((StatusCode::CREATED, Json(response)))
 }
 ```
 
-**Design walk-through:** `VehicleResponse` is an HTTP representation, not the domain model. `From<&Vehicle>` gives an explicit conversion; `.to_owned()` copies strings because the JSON response must own them after the mutex lock ends. This is a *justified clone*, not accidental duplication. The response type deliberately contains no `status` string implementation detail. `Json` is the final handler extractor because reading the request body must come after path/state/header extraction in Axum.
+### Read the handler line by line
 
-Add `pub mod api;` to `src/lib.rs`.
+`State(state): State<AppState>` obtains a shared handle configured on the router. `Json(input): Json<CreateVehicle>` asks Axum/Serde to parse the request body. It goes **last** because it consumes the request body, whereas `State` does not. This is an Axum extractor constraint, documented in [Axum's extractor guide](https://docs.rs/axum/0.8/axum/extract/index.html#the-order-of-extractors).
+
+`fleet.lock()` gives temporary exclusive access to the vector. `map_err` turns a poisoned mutex error into HTTP 500; the `?` operator exits the handler early if locking fails. The return type `Result<(StatusCode, Json<VehicleResponse>), StatusCode>` says success produces a status and JSON body; failure produces a status code. Day 5 expands error responses.
+
+The ID expression is short but combines several operations. Read it as: iterate over vehicles; select their IDs; take the maximum (`Option<u32>`); use zero if there are none; add one safely with `checked_add`; or return HTTP 500 on overflow. This is a **temporary in-memory strategy**, not a database ID policy or a solution for distributed servers.
+
+`Vehicle::new` preserves the Day 1 validation rules. `VehicleResponse::from(&vehicle)` borrows the domain object and creates an owned HTTP representation. `fleet.add(vehicle)` then **moves ownership** of the vehicle into the collection. This is exactly the ownership model from Day 2, now applied to HTTP.
+
+**Design limitation:** A request with structurally invalid JSON can be rejected by Axum before this handler runs (with framework-defined status/body). A syntactically valid request with `daily_rate_cents <= 0` gets our explicit 400, currently without JSON detail. Day 5 improves domain error mapping. Don't claim all errors already share one format.
+
+## 7. Start the server
 
 Replace `src/main.rs` (**FULL FILE**):
 
@@ -839,19 +971,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`Box<dyn std::error::Error>` here is only a convenient startup-error return type; it is not a replacement for typed domain errors. `#[tokio::main]` starts the async runtime.
+`#[tokio::main]` supplies the runtime, `TcpListener::bind(...).await` awaits an asynchronous socket bind, and `axum::serve` handles requests. `Box<dyn Error>` is a convenient startup error type, not a recommendation to replace typed domain errors.
 
-## 5. Run your first API
+Project layout now:
 
-Terminal one:
+```text
+rust-rent/
+  Cargo.toml
+  Cargo.lock
+  src/
+    lib.rs
+    main.rs
+    api.rs
+    vehicle.rs
+    fleet.rs
+    customer.rs
+    bin/
+      json_experiment.rs
+```
+
+From terminal one:
 
 ```bash
 cargo fmt
-cargo check
-cargo run
+cargo check --all-targets
+cargo test
+cargo run --bin rust-rent
 ```
 
-Terminal two:
+From terminal two:
 
 ```bash
 curl -i http://127.0.0.1:3000/health
@@ -859,18 +1007,48 @@ curl -i -X POST http://127.0.0.1:3000/vehicles \
   -H 'Content-Type: application/json' \
   -d '{"make":"Toyota","model":"Camry","year":2025,"daily_rate_cents":6500}'
 curl -s http://127.0.0.1:3000/vehicles | jq
+curl -i -X POST http://127.0.0.1:3000/vehicles \
+  -H 'Content-Type: application/json' \
+  -d '{"make":"Toyota","model":"Camry","year":2025,"daily_rate_cents":0}'
 ```
 
-You should receive **201 Created** for the POST and a JSON array for GET. Restarting the server loses the data, by design—Day 6 introduces persistence.
+Expected: `/health` returns HTTP 200 with `OK`; valid POST returns HTTP 201 and a JSON vehicle; GET lists that vehicle; zero-rate POST returns HTTP 400. Data disappears when the server restarts because our fleet lives in memory.
 
-### Checkpoint and exercises
+## 8. Exercises: defined objectives, room to discover
 
-1. Send a `0` daily rate and explain where the validation happens.
-2. Call `/vehicles` twice. Why doesn't `get` mutate the fleet?
-3. Predict what happens if you move the lock into a helper that calls `.await` before dropping the guard.
-4. Why do `State` and `Json` appear in a handler's argument list rather than a framework-generated controller class?
+**Exercise A (required): Count vehicles.** Starting from the working Day 4 `src/api.rs`, implement `GET /vehicles/count`. It must return JSON `{"count":2}` after creating two vehicles. Reuse `AppState` and read-only fleet access; do not create a new fleet or mutate one. **Hint:** create a small `#[derive(Serialize)]` response struct and a handler returning `Json<...>`. Add the more specific `/vehicles/count` route before Day 5 introduces `/vehicles/{id}`. Verify with `curl`.
 
-**Explain it back:** Who owns the vehicles? Who owns the JSON response strings? What's the difference between a domain object and its API representation?
+**Exercise B (discovery): Ownership of response strings.** In the `From<&Vehicle>` implementation, attempt to hold borrowed `&str` fields in a response struct. Can that response safely outlive the mutex guard? Why does returning owned `String` avoid that lifetime requirement? Restore the original response afterward. This is deliberately exploratory: the expected outcome is an explanation, not necessarily a compiling borrowed DTO.
+
+**Exercise C (optional extension): Structured validation errors.** For a request with a zero daily rate, return `{"error":"invalid daily rate"}` alongside HTTP 400. Keep the actual validation inside `Vehicle::new`; translate the returned `VehicleError` at the HTTP boundary. Explain why that error string doesn't belong inside the domain model. Day 5 will provide a more systematic error shape.
+
+**Verification checkpoint:** stop the server and run `cargo fmt --check && cargo check --all-targets && cargo test`; then repeat the four HTTP checks above. Tell another learner what `Arc`, `Mutex`, `From<&Vehicle>`, `Json`, `State`, and `.await` each contribute. If you cannot explain one, revisit its isolated experiment before continuing.
+
+**Worked answer for Exercise A (read after attempting):**
+
+```rust
+// ADD to src/api.rs, after VehicleResponse
+#[derive(Serialize)]
+struct VehicleCount {
+    count: usize,
+}
+
+// ADD to src/api.rs, alongside the other handlers
+async fn count_vehicles(State(state): State<AppState>) -> Result<Json<VehicleCount>, StatusCode> {
+    let fleet = state
+        .fleet
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(VehicleCount {
+        count: fleet.all().len(),
+    }))
+}
+
+// ADD inside router(), before .with_state(state)
+// .route("/vehicles/count", get(count_vehicles))
+```
+
+**Before Day 5:** Keep your domain models unchanged; do not add the Day 5 CRUD endpoints yet. The new Rust features this day were async futures, a runtime, shared ownership and synchronization, Serde derives, conversion traits, and Axum extractors—not new vehicle business rules.
 
 ---
 
