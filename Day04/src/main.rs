@@ -1,53 +1,16 @@
-mod customer;
-mod fleet;
-mod vehicle;
+use rust_rent::api::{AppState, router};
 
-use customer::*;
-use fleet::{Fleet, FleetError};
-use vehicle::Vehicle;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let app = router(AppState::default());
 
-fn main() {
-    let mut fleet = Fleet::new();
+    let listener_address: String = "0.0.0.0:3000".into();
 
-    fleet.add(
-        Vehicle::new(1, "Toyota".into(), "Camry".into(), 2025, 6500)
-            .expect("seed vehicle is valid"),
-    );
-    fleet.add(
-        Vehicle::new(2, "Jeep".into(), "Wrangler".into(), 2026, 14000)
-            .expect("seed vehicle is valid"),
-    );
+    let listener = tokio::net::TcpListener::bind(listener_address.clone()).await?;
 
-    for car in fleet.available() {
-        car.display();
-    }
+    println!("RestRent: http://{}", &listener_address);
 
-    match fleet.find_by_id(2) {
-        Some(car) => println!("Found {} {}", car.make(), car.model()),
-        None => println!("Not found"),
-    }
+    axum::serve(listener, app).await?;
 
-    let car2 = match fleet.require(5) {
-        Ok(car2) => car2,
-        Err(FleetError::VehicleNotFound) => {
-            println!("Vehicle with id {} not found", 5);
-            return;
-        }
-    };
-
-    println!("{}", car2.display());
-
-    let customer = match Customer::new(1, "Jeremey Schrack".into(), "jdschrack@gmail.com".into()) {
-        Ok(customer) => customer,
-        Err(CustomerError::EmptyName) => {
-            println!("Invalid name");
-            return;
-        }
-        Err(CustomerError::InvalidEmail) => {
-            println!("Invalid email");
-            return;
-        }
-    };
-
-    println!("{} {}", customer.name(), customer.email());
+    Ok(())
 }
