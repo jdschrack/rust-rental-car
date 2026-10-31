@@ -1522,29 +1522,23 @@ pub fn status(&self) -> VehicleStatus {
     self.status
 }
 
-pub fn reconstitute(
+pub(crate) fn reconstitute(
     id: u32,
     make: String,
     model: String,
     year: u16,
-    rate_cents: i64,
+    daily_rate_cents: i64,
     status: VehicleStatus,
-) -> Result<Self, VehicleError> {
-    let mut vehicle = Self::new(id, make, model, year, rate_cents)?;
-    vehicle.status = status;
-    Ok(vehicle)
+) -> Self {
+    Self { id, make, model, year, daily_rate_cents, status }
 }
 ```
 
-The first method provides a read-only way to observe operational status; the second preserves construction rules when rebuilding a vehicle from storage. It **does not** let the repository write private fields. Add this to `impl Customer` in `src/customer.rs` (**ADD**):
+The first method reads operational status. The second **reconstitutes persisted state directly**, without invoking `new` or rechecking creation policies. The database already enforces the schema constraints on writes. `pub(crate)` limits the restoration entry point to this crate; ordinary callers should use `new`. The repository still handles fallible SQL-to-Rust conversions (for example `i64` to `u32`) and invalid stored enum strings. This consciously trusts the database's domain values; data corruption or older incompatible rows may still require a migration or separate consistency check. Add this to `impl Customer` in `src/customer.rs` (**ADD**):
 
 ```rust
-pub fn reconstitute(
-    id: u32,
-    name: String,
-    email: String,
-) -> Result<Self, CustomerError> {
-    Self::new(id, name, email)
+pub(crate) fn reconstitute(id: u32, name: String, email: String) -> Self {
+    Self { id, name, email }
 }
 ```
 
@@ -1584,15 +1578,14 @@ impl TryFrom<VehicleRow> for Vehicle {
         };
         let id = u32::try_from(row.id)?;
         let year = u16::try_from(row.year)?;
-        Vehicle::reconstitute(
+        Ok(Vehicle::reconstitute(
             id,
             row.make,
             row.model,
             year,
             row.daily_rate_cents,
             status,
-        )
-        .map_err(|_| invalid_row("invalid vehicle data").into())
+        ))
     }
 }
 
@@ -1651,8 +1644,9 @@ impl VehicleRepository {
         .execute(&self.pool)
         .await?;
         let id = u32::try_from(result.last_insert_rowid())?;
-        Ok(Vehicle::new(id, make, model, year, rate)
-            .map_err(|_| invalid_row("invalid inserted vehicle"))?)
+        self.find(id)
+            .await?
+            .ok_or_else(|| invalid_row("inserted vehicle not found").into())
     }
 
     pub async fn change_rate(&self, id: u32, rate: i64) -> RepoResult<Option<Vehicle>> {
@@ -1687,8 +1681,7 @@ struct CustomerRow {
 
 fn customer_from_row(row: CustomerRow) -> RepoResult<Customer> {
     let id = u32::try_from(row.id)?;
-    Customer::reconstitute(id, row.name, row.email)
-        .map_err(|_| invalid_row("invalid customer data").into())
+    Ok(Customer::reconstitute(id, row.name, row.email))
 }
 
 pub struct CustomerRepository {
@@ -1708,6 +1701,15 @@ impl CustomerRepository {
         rows.into_iter().map(customer_from_row).collect()
     }
 
+    pub async fn find(&self, id: u32) -> RepoResult<Option<Customer>> {
+        let row: Option<CustomerRow> =
+            sqlx::query_as("SELECT id, name, email FROM customers WHERE id = ?")
+                .bind(i64::from(id))
+                .fetch_optional(&self.pool)
+                .await?;
+        row.map(customer_from_row).transpose()
+    }
+
     pub async fn create(&self, name: String, email: String) -> RepoResult<Customer> {
         let result = sqlx::query(
             "INSERT INTO customers (name, email) VALUES (?, ?)",
@@ -1717,8 +1719,9 @@ impl CustomerRepository {
         .execute(&self.pool)
         .await?;
         let id = u32::try_from(result.last_insert_rowid())?;
-        Ok(Customer::new(id, name, email)
-            .map_err(|_| invalid_row("invalid inserted customer"))?)
+        self.find(id)
+            .await?
+            .ok_or_else(|| invalid_row("inserted customer not found").into())
     }
 
     pub async fn email_exists(&self, email: &str) -> RepoResult<bool> {
@@ -1732,7 +1735,7 @@ impl CustomerRepository {
 }
 ```
 
-**What is Rust teaching here?** `FromRow` is a derive macro for decoding SQL columns; `TryFrom<VehicleRow>` is a fallible conversion into the *validated* domain. `?` propagates either SQL errors or integer conversion errors. `row.map(...).transpose()` turns `Option<Result<T, E>>` into `Result<Option<T>, E>`: a missing database record is not the same as an I/O failure.
+**What is Rust teaching here?** `FromRow` is a derive macro for decoding SQL columns; `TryFrom<VehicleRow>` is a fallible **representation conversion** into the domain, not a second round of creation validation. Once IDs, model year and status have been decoded, `reconstitute` restores the fields directly. After INSERT, the repositories read their stored rows through `find`, so **both reads and newly inserted responses** use the same hydration path. The HTTP layer still calls the ordinary domain constructors to validate new input before attempting INSERT. `?` propagates either SQL errors or integer conversion errors. `row.map(...).transpose()` turns `Option<Result<T, E>>` into `Result<Option<T>, E>`: a missing database record is not the same as an I/O failure.
 
 **Intentional simplification:** `Box<dyn Error + Send + Sync>` permits several error sources without inventing an unintroduced error hierarchy. A later production design should use a typed repository error. These methods do not by themselves make the HTTP layer persistent; the next section wires that boundary.
 
@@ -2228,8 +2231,8 @@ impl Reservation {
         })
     }
 
-    // Reconstitution accepts the stored total. Historical bookings retain
-    // their original price even if the vehicle's current rate changes.
+    // Reconstitution restores stored state without current creation validation.
+    // Historical bookings retain their original total and status even if rules change.
     pub fn from_storage(
         id: u32,
         vehicle_id: u32,
@@ -2238,16 +2241,10 @@ impl Reservation {
         end_date: NaiveDate,
         total_cents: i64,
         status: ReservationStatus,
-    ) -> Result<Self, ReservationError> {
-        if end_date <= start_date {
-            return Err(ReservationError::InvalidDateRange);
-        }
-        if total_cents <= 0 {
-            return Err(ReservationError::InvalidRate);
-        }
-        Ok(Self {
+    ) -> Self {
+        Self {
             id, vehicle_id, customer_id, start_date, end_date, total_cents, status,
-        })
+        }
     }
 
     pub fn id(&self) -> u32 { self.id }
@@ -2384,10 +2381,9 @@ fn decode(row: StoredReservation) -> Result<Reservation, RentalError> {
         "cancelled" => ReservationStatus::Cancelled,
         _ => return Err(RentalError::InvalidStoredData),
     };
-    Reservation::from_storage(
+    Ok(Reservation::from_storage(
         id, vehicle_id, customer_id, start, end, row.total_cents, status,
-    )
-    .map_err(|_| RentalError::InvalidStoredData)
+    ))
 }
 
 pub struct ReservationService {
@@ -2507,6 +2503,8 @@ impl ReservationService {
 This service returns `Result<_, RentalError>`. `impl From<sqlx::Error> for RentalError` tells Rust how to turn SQLx failures into this error type. `impl From<ReservationError>` does the same for validated domain construction. Thus `?` can propagate either kind without a manual `match` at each call.
 
 `decode` is intentionally a *fallible* conversion of an untrusted storage row into a domain object. Its `row.map(decode).transpose()` means: no row → `Ok(None)`, valid row → `Ok(Some(...))`, invalid row → `Err(...)`.
+
+**Restoring reservations:** As in Day 6, `Reservation::from_storage` now directly restores the stored fields. It does not call `Reservation::new`, recalculate historical prices or repeat creation validation. The `decode` function still checks database representations (identifiers, date parsing and status strings) before constructing the domain entity. This is a deliberate trust boundary: storage constraints protect normal writes, while corrupted historical data may require dedicated repair rather than silent rewriting.
 
 ### Transaction reasoning experiment
 
