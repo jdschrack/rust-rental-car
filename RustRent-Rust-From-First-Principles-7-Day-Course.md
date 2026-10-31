@@ -1309,29 +1309,42 @@ Why should `Vehicle::change_rate` handle validation even if the handler already 
 
 ---
 
-# Day 6 — Persist domain data with SQLite and SQLx
+# Day 6 — Replace in-memory storage with SQLite and SQLx
 
-**Outcome:** You learn the difference between a domain entity, its database row, and an HTTP response. The application survives a restart.
+**Outcome:** Every existing vehicle and customer HTTP endpoint uses SQLite, not the Day 5 in-memory stores. Records survive an application restart. The `Vehicle` and `Customer` domain models remain responsible for validation.
 
-## 1. Why a database changes the design
+**Starting point:** Day 5 routes work: `GET/POST /vehicles`, `GET/PATCH/DELETE /vehicles/{id}`, and `GET/POST /customers`. You already have `src/api.rs`, `src/main.rs`, `src/lib.rs`, `src/vehicle.rs`, and `src/customer.rs`.
 
-Your fleet currently lives in a `Vec`. It dies with the process. SQLite persists records. The problem changes from borrowing data in memory to converting between independently owned representations:
+**Required checkpoints:** (A) database and migration, (B) repository read/write, (C) complete HTTP migration, (D) isolated integration test and restart verification. We replace entire files where indicated so there is no guesswork about how code fits together. This is a longer module; complete each checkpoint before proceeding.
 
-`SQLite row -> Vehicle domain type -> VehicleResponse`
+## 1. Mental model: why add another layer?
 
-These layers overlap in fields but have different responsibilities. Domain objects protect invariants; rows reflect storage; DTOs reflect HTTP contracts. Avoid treating SQLx's `FromRow` as a reason to eliminate domain methods.
+Day 5's `Arc<Mutex<Fleet>>` owns a vector inside one process. When the server stops, its contents disappear. We want to store records independently of the process. SQLite provides the persistent data; SQLx provides async access.
 
-## 2. Dependencies and migrations
+The request path we will implement is:
 
-Use the version documented for this curriculum's API examples. SQLx 0.9 requires a current Rust toolchain; verify your `rustc --version` (at least 1.94.0 for this line). Its official docs list the bundled SQLite feature as `sqlite` and the alternate explicit bundled flag in registry feature metadata; use the configuration from docs for the installed version and verify with `cargo tree -e features`.
+`HTTP request → Axum handler → VehicleRepository → SQLx connection pool → SQLite`
+
+A read traverses the reverse path: `SQLite row → validated Vehicle → VehicleResponse → JSON`.
+
+Why *not* place SQL in `impl Vehicle`? A vehicle's daily-rate and maintenance rules should work in unit tests or a future CLI without needing SQLite. The repository owns storage decisions. A repository is a concrete struct with an `impl`, **not** a trait merely because it has a repository name.
+
+We intentionally replace both customer and vehicle stores **at the same time**. From this day forward, `AppState` holds a single database pool, not the two in-memory mutexes. `fleet.rs` and `customers.rs` can remain in the project as historical learning artifacts, but the HTTP handlers no longer import or use them.
+
+## 2. Dependencies and schema — Checkpoint A
+
+From the project root, confirm `rustc --version` is at least 1.94 for this course's SQLx 0.9 examples. Add SQLx and a temporary-directory test dependency:
 
 ```bash
 cargo add sqlx@0.9 --no-default-features \
-  --features runtime-tokio,sqlite,migrate,macros,derive
-mkdir -p migrations
+  --features runtime-tokio,sqlite-bundled,migrate,macros,derive
+cargo add --dev tempfile
+mkdir -p migrations tests
 ```
 
-Create `migrations/202610270001_create_schema.sql` (**FULL FILE**):
+The explicit `sqlite-bundled` feature compiles against a bundled SQLite distribution; your Arch `sqlite` package is useful for the `sqlite3` command-line inspector. SQLx's migration macro needs both `migrate` and `macros`. Keep `Cargo.lock` checked in. If installed crate APIs or features differ, check [SQLx 0.9 documentation](https://docs.rs/sqlx/0.9.0/sqlx/) before modifying code.
+
+Create `migrations/202610300001_initial.sql` (**FULL FILE**):
 
 ```sql
 CREATE TABLE vehicles (
@@ -1346,7 +1359,7 @@ CREATE TABLE vehicles (
 
 CREATE TABLE customers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
+    name TEXT NOT NULL CHECK (length(trim(name)) > 0),
     email TEXT NOT NULL UNIQUE
 );
 
@@ -1366,9 +1379,7 @@ CREATE INDEX reservations_vehicle_dates
 ON reservations(vehicle_id, start_date, end_date);
 ```
 
-The `status` column is physical operational status, **not** a signal that the vehicle is booked for every date. `start_date` is included, `end_date` excluded. ISO-formatted dates (`YYYY-MM-DD`) sort lexically in SQLite.
-
-## 3. The pool is a shared handle, not a shared mutex
+This schema uses SQLite `INTEGER` identifiers (`i64` in SQLx), while the Day 1 domain types use `u32`. We **check** conversions instead of casting with `as`, because database integers could exceed a domain type's range. On Day 7 the reservations table becomes active. Dates will be ISO strings representing half-open intervals (`[start_date, end_date)`). The SQL constraints supplement, rather than replace, domain validation.
 
 Create `src/database.rs` (**FULL FILE**):
 
@@ -1379,28 +1390,41 @@ use sqlx::{
 };
 use std::str::FromStr;
 
-pub async fn connect() -> Result<SqlitePool, Box<dyn std::error::Error>> {
-    let options = SqliteConnectOptions::from_str("sqlite://rust_rent.db")?
+pub async fn connect(database_url: &str) -> Result<SqlitePool, Box<dyn std::error::Error + Send + Sync>> {
+    let options = SqliteConnectOptions::from_str(database_url)?
         .create_if_missing(true)
         .foreign_keys(true);
+
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(options)
         .await?;
+
     sqlx::migrate!("./migrations").run(&pool).await?;
     Ok(pool)
 }
 ```
 
-`SqlitePool` is a cloneable handle to connection management. You generally do not wrap it in a mutex. Each query obtains a connection as needed. **Do not hold a DB transaction across unrelated network calls.**
-
-## 4. Make `Vehicle` reconstitution explicit
-
-Rows read from a database should be validated before becoming domain objects. Add a constructor to `impl Vehicle` called `reconstitute` that takes an existing ID, strings, year, positive rate, and a `VehicleStatus`. It should call `Vehicle::new(...)` first and then set the validated status. Add a `status(&self) -> VehicleStatus` getter. This is deliberately a small domain-level exercise: the compiler and your tests should enforce the API instead of allowing the repository to write private fields.
-
-**Worked model solution (ADD to `impl Vehicle`):**
+Add to `src/lib.rs` if they are not already present:
 
 ```rust
+pub mod database;
+pub mod repository;
+```
+
+The `repository` module is created in the next step; create it before running the compiler. **Why is `connect` async?** Establishing database connections requires I/O. **Why doesn't the pool need an external `Mutex`?** It already coordinates checked-out connections internally, and cloned `SqlitePool` values refer to the same pool. **Why pass a URL?** A test can use its own temporary file instead of touching your real application data.
+
+## 3. Repository: SQL rows become domain objects — Checkpoint B
+
+We'll deliberately use a concrete `VehicleRepository` and `CustomerRepository`. Each owns a cheap cloneable pool handle. Mapping database rows into a domain type is *fallible*, so the return type distinguishes a failed database read from a valid row.
+
+Add the following inside `impl Vehicle` in `src/vehicle.rs` (**ADD**, not a replacement):
+
+```rust
+pub fn status(&self) -> VehicleStatus {
+    self.status
+}
+
 pub fn reconstitute(
     id: u32,
     make: String,
@@ -1413,21 +1437,36 @@ pub fn reconstitute(
     vehicle.status = status;
     Ok(vehicle)
 }
+```
 
-pub fn status(&self) -> VehicleStatus {
-    self.status
+The first method provides a read-only way to observe operational status; the second preserves construction rules when rebuilding a vehicle from storage. It **does not** let the repository write private fields. Add this to `impl Customer` in `src/customer.rs` (**ADD**):
+
+```rust
+pub fn reconstitute(
+    id: u32,
+    name: String,
+    email: String,
+) -> Result<Self, CustomerError> {
+    Self::new(id, name, email)
 }
 ```
 
-## 5. Translate rows to domain values
-
-Create `src/repository.rs` (**FULL FILE**, initial read-only repository):
+Create `src/repository.rs` (**FULL FILE**):
 
 ```rust
-use crate::vehicle::{Vehicle, VehicleStatus};
+use crate::{
+    customer::Customer,
+    vehicle::{Vehicle, VehicleStatus},
+};
 use sqlx::{FromRow, SqlitePool};
 
-#[derive(Debug, FromRow)]
+type RepoResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+fn invalid_row(message: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message.to_owned())
+}
+
+#[derive(FromRow)]
 struct VehicleRow {
     id: i64,
     make: String,
@@ -1435,6 +1474,36 @@ struct VehicleRow {
     year: i64,
     daily_rate_cents: i64,
     status: String,
+}
+
+impl TryFrom<VehicleRow> for Vehicle {
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+
+    fn try_from(row: VehicleRow) -> RepoResult<Self> {
+        let status = match row.status.as_str() {
+            "ready" => VehicleStatus::Ready,
+            "maintenance" => VehicleStatus::Maintenance,
+            _ => return Err(invalid_row("unknown vehicle status").into()),
+        };
+        let id = u32::try_from(row.id)?;
+        let year = u16::try_from(row.year)?;
+        Vehicle::reconstitute(
+            id,
+            row.make,
+            row.model,
+            year,
+            row.daily_rate_cents,
+            status,
+        )
+        .map_err(|_| invalid_row("invalid vehicle data").into())
+    }
+}
+
+fn status_str(status: VehicleStatus) -> &'static str {
+    match status {
+        VehicleStatus::Ready => "ready",
+        VehicleStatus::Maintenance => "maintenance",
+    }
 }
 
 pub struct VehicleRepository {
@@ -1446,78 +1515,482 @@ impl VehicleRepository {
         Self { pool }
     }
 
-    pub async fn list(&self) -> Result<Vec<Vehicle>, Box<dyn std::error::Error>> {
+    pub async fn list(&self) -> RepoResult<Vec<Vehicle>> {
         let rows: Vec<VehicleRow> = sqlx::query_as(
-            "SELECT id, make, model, year, daily_rate_cents, status              FROM vehicles ORDER BY id"
+            "SELECT id, make, model, year, daily_rate_cents, status \
+             FROM vehicles ORDER BY id",
         )
         .fetch_all(&self.pool)
         .await?;
+        rows.into_iter().map(Vehicle::try_from).collect()
+    }
 
-        let mut vehicles = Vec::with_capacity(rows.len());
-        for row in rows {
-            let status = match row.status.as_str() {
-                "ready" => VehicleStatus::Ready,
-                "maintenance" => VehicleStatus::Maintenance,
-                _ => return Err("Invalid vehicle status in database".into()),
-            };
-            let id = u32::try_from(row.id)?;
-            let year = u16::try_from(row.year)?;
-            let vehicle = Vehicle::reconstitute(
-                id, row.make, row.model, year,
-                row.daily_rate_cents, status
-            ).map_err(|_| "Invalid vehicle row")?;
-            vehicles.push(vehicle);
+    pub async fn find(&self, id: u32) -> RepoResult<Option<Vehicle>> {
+        let row: Option<VehicleRow> = sqlx::query_as(
+            "SELECT id, make, model, year, daily_rate_cents, status \
+             FROM vehicles WHERE id = ?",
+        )
+        .bind(i64::from(id))
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(Vehicle::try_from).transpose()
+    }
+
+    pub async fn create(
+        &self,
+        make: String,
+        model: String,
+        year: u16,
+        rate: i64,
+    ) -> RepoResult<Vehicle> {
+        let result = sqlx::query(
+            "INSERT INTO vehicles (make, model, year, daily_rate_cents, status) \
+             VALUES (?, ?, ?, ?, 'ready')",
+        )
+        .bind(&make)
+        .bind(&model)
+        .bind(i64::from(year))
+        .bind(rate)
+        .execute(&self.pool)
+        .await?;
+        let id = u32::try_from(result.last_insert_rowid())?;
+        Ok(Vehicle::new(id, make, model, year, rate)
+            .map_err(|_| invalid_row("invalid inserted vehicle"))?)
+    }
+
+    pub async fn change_rate(&self, id: u32, rate: i64) -> RepoResult<Option<Vehicle>> {
+        let result = sqlx::query(
+            "UPDATE vehicles SET daily_rate_cents = ? WHERE id = ?",
+        )
+        .bind(rate)
+        .bind(i64::from(id))
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
         }
-        Ok(vehicles)
+        self.find(id).await
+    }
+
+    pub async fn delete(&self, id: u32) -> RepoResult<bool> {
+        let result = sqlx::query("DELETE FROM vehicles WHERE id = ?")
+            .bind(i64::from(id))
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+}
+
+#[derive(FromRow)]
+struct CustomerRow {
+    id: i64,
+    name: String,
+    email: String,
+}
+
+fn customer_from_row(row: CustomerRow) -> RepoResult<Customer> {
+    let id = u32::try_from(row.id)?;
+    Customer::reconstitute(id, row.name, row.email)
+        .map_err(|_| invalid_row("invalid customer data").into())
+}
+
+pub struct CustomerRepository {
+    pool: SqlitePool,
+}
+
+impl CustomerRepository {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn list(&self) -> RepoResult<Vec<Customer>> {
+        let rows: Vec<CustomerRow> =
+            sqlx::query_as("SELECT id, name, email FROM customers ORDER BY id")
+                .fetch_all(&self.pool)
+                .await?;
+        rows.into_iter().map(customer_from_row).collect()
+    }
+
+    pub async fn create(&self, name: String, email: String) -> RepoResult<Customer> {
+        let result = sqlx::query(
+            "INSERT INTO customers (name, email) VALUES (?, ?)",
+        )
+        .bind(&name)
+        .bind(&email)
+        .execute(&self.pool)
+        .await?;
+        let id = u32::try_from(result.last_insert_rowid())?;
+        Ok(Customer::new(id, name, email)
+            .map_err(|_| invalid_row("invalid inserted customer"))?)
+    }
+
+    pub async fn email_exists(&self, email: &str) -> RepoResult<bool> {
+        let found: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM customers WHERE email = ?")
+                .bind(email)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(found.is_some())
     }
 }
 ```
 
-The conversion from `i64` to `u32` / `u16` is **fallible**: database values can be outside the intended domain ranges. This is precisely why `TryFrom` and `?` matter. The `Box<dyn Error>` return is a teaching convenience only: a fuller service would use a concrete repository-error enum.
+**What is Rust teaching here?** `FromRow` is a derive macro for decoding SQL columns; `TryFrom<VehicleRow>` is a fallible conversion into the *validated* domain. `?` propagates either SQL errors or integer conversion errors. `row.map(...).transpose()` turns `Option<Result<T, E>>` into `Result<Option<T>, E>`: a missing database record is not the same as an I/O failure.
 
-## 6. A deliberately narrow migration checkpoint
+**Intentional simplification:** `Box<dyn Error + Send + Sync>` permits several error sources without inventing an unintroduced error hierarchy. A later production design should use a typed repository error. These methods do not by themselves make the HTTP layer persistent; the next section wires that boundary.
 
-To avoid a giant "replace everything" step, Day 6 keeps the in-memory HTTP code from Day 5 running while you **independently prove the database layer**. Add `pub mod database; pub mod repository;` to `lib.rs`. Add the **complete test below** to `tests/database.rs`. Start with a fresh test database; it must return an empty vector. Do not use the main application database in tests. Insert a row using `sqlite3 rust_rent.db` or SQLx and run again. Do not pretend you have migrated all CRUD handlers yet.
+## 4. Connect the pool to application state — Checkpoint C
 
-**Required Day 6 test (FULL FILE `tests/database.rs`):**
+**Replace** the Day 5 `AppState`. Previously it had `Arc<Mutex<Fleet>>` and `Arc<Mutex<CustomerStore>>`. It will now contain **only** a database pool. Remove the old `Arc`, `Mutex`, `Fleet` and `CustomerStore` imports from the API module. Don't attempt to access `state.fleet` or `state.customers` from new handlers—they no longer exist.
+
+The persistent state becomes:
 
 ```rust
-use rust_rent::database;
-use rust_rent::repository::VehicleRepository;
-
-#[tokio::test]
-async fn newly_created_database_contains_no_vehicles() {
-    // Day 6's connect() uses a fixed local path; ensure the application
-    // is stopped and run this only with a fresh rust_rent.db.
-    let pool = database::connect().await.expect("database and migrations");
-    let repository = VehicleRepository::new(pool);
-    let vehicles = repository.list().await.expect("valid database rows");
-    assert!(
-        vehicles.is_empty(),
-        "this test needs a clean database; remove rust_rent.db before running"
-    );
+#[derive(Clone)]
+pub struct AppState {
+    pub pool: SqlitePool,
 }
 ```
 
-**Important test-design limitation:** This beginner checkpoint uses the fixed `rust_rent.db` path and is **not isolated**; it will fail if you have existing vehicles, and running tests concurrently with the application is unsafe for this lesson. Stop the server and create a fresh database first. A stronger design makes `connect(database_url)` configurable and creates a temporary database per test; treat that as the required next refinement before publishing reusable CI tests.
+Unlike `AppState::default()`, building this state can fail: connecting to SQLite requires I/O and migrations might be invalid. That work belongs in `main.rs` before serving HTTP. **Replace `src/main.rs` (FULL FILE):**
 
-Sample smoke commands after you have run the connection once:
+```rust
+use rust_rent::{
+    api::{router, AppState},
+    database,
+};
 
-```bash
-sqlite3 rust_rent.db 'SELECT name FROM sqlite_master WHERE type="table";'
-sqlite3 rust_rent.db 'SELECT * FROM vehicles;'
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "sqlite://rust_rent.db".to_owned());
+    let pool = database::connect(&database_url).await?;
+    let app = router(AppState { pool });
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+    println!("RustRent: http://127.0.0.1:3000");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
 ```
 
-**Checkpoint definition:** A database layer compiles, migrates the schema, reads rows as `Vehicle` domain values, and passes at least one test. Day 7 completes its integration with HTTP. This is intentional incremental development.
+Why can `AppState` derive `Clone`? `SqlitePool::clone()` clones a shared pool handle; it doesn't copy the SQLite database or all database connections. Why isn't there a mutex? SQLx manages connections internally. This is the concrete answer to the Day 6 question “where do we use the connection?”
 
-### Exercises
+## 5. Replace the entire HTTP adapter (FULL FILE `src/api.rs`)
 
-1. Add `VehicleRepository::insert(&Vehicle)` using parameter-bound SQL and `sqlx::query(...).bind(...).execute(...)`.
-2. Write a test showing `reconstitute` rejects invalid rates.
-3. Explain why `try_from` is safer than casting a database ID using `as`.
-4. Explain why a pool is not the same thing as `Arc<Mutex<Vec<_>>>`.
+This listing preserves the **Day 5 endpoint contracts**: list/get/create vehicles, PATCH the rate, delete a vehicle, and list/create customers. All now use SQLite. This is a replacement, **not** code to paste below the old handlers.
 
-**Important:** The Day 6 material describes and exemplifies persistence mechanics but is not a claim that all Day 5 HTTP endpoints are now SQLite-backed. Your final integration work is defined on Day 7 below.
+```rust
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    routing::get,
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
+
+use crate::{
+    customer::Customer,
+    repository::{CustomerRepository, VehicleRepository},
+    vehicle::Vehicle,
+};
+
+#[derive(Clone)]
+pub struct AppState {
+    pub pool: SqlitePool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateVehicle {
+    pub make: String,
+    pub model: String,
+    pub year: u16,
+    pub daily_rate_cents: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VehicleResponse {
+    id: u32,
+    make: String,
+    model: String,
+    year: u16,
+    daily_rate_cents: i64,
+    rentable: bool,
+}
+
+impl From<&Vehicle> for VehicleResponse {
+    fn from(vehicle: &Vehicle) -> Self {
+        Self {
+            id: vehicle.id(),
+            make: vehicle.make().to_owned(),
+            model: vehicle.model().to_owned(),
+            year: vehicle.year(),
+            daily_rate_cents: vehicle.daily_rate_cents(),
+            rentable: vehicle.is_rentable(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ChangeRate {
+    daily_rate_cents: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateCustomer {
+    name: String,
+    email: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CustomerResponse {
+    id: u32,
+    name: String,
+    email: String,
+}
+
+impl From<&Customer> for CustomerResponse {
+    fn from(customer: &Customer) -> Self {
+        Self {
+            id: customer.id(),
+            name: customer.name().to_owned(),
+            email: customer.email().to_owned(),
+        }
+    }
+}
+
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(|| async { "OK" }))
+        .route("/vehicles", get(list_vehicles).post(create_vehicle))
+        .route(
+            "/vehicles/{id}",
+            get(get_vehicle).patch(change_rate).delete(delete_vehicle),
+        )
+        .route("/customers", get(list_customers).post(create_customer))
+        .with_state(state)
+}
+
+async fn list_vehicles(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<VehicleResponse>>, StatusCode> {
+    let repository = VehicleRepository::new(state.pool.clone());
+    let vehicles = repository.list().await.map_err(internal_error)?;
+    Ok(Json(vehicles.iter().map(VehicleResponse::from).collect()))
+}
+
+async fn get_vehicle(
+    State(state): State<AppState>,
+    Path(id): Path<u32>,
+) -> Result<Json<VehicleResponse>, StatusCode> {
+    let repository = VehicleRepository::new(state.pool.clone());
+    let vehicle = repository
+        .find(id)
+        .await
+        .map_err(internal_error)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(VehicleResponse::from(&vehicle)))
+}
+
+async fn create_vehicle(
+    State(state): State<AppState>,
+    Json(input): Json<CreateVehicle>,
+) -> Result<(StatusCode, Json<VehicleResponse>), StatusCode> {
+    // Validate using the domain model before attempting SQL.
+    Vehicle::new(
+        0,
+        input.make.clone(),
+        input.model.clone(),
+        input.year,
+        input.daily_rate_cents,
+    )
+    .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let repository = VehicleRepository::new(state.pool.clone());
+    let vehicle = repository
+        .create(
+            input.make,
+            input.model,
+            input.year,
+            input.daily_rate_cents,
+        )
+        .await
+        .map_err(internal_error)?;
+    Ok((StatusCode::CREATED, Json(VehicleResponse::from(&vehicle))))
+}
+
+async fn change_rate(
+    State(state): State<AppState>,
+    Path(id): Path<u32>,
+    Json(input): Json<ChangeRate>,
+) -> Result<Json<VehicleResponse>, StatusCode> {
+    let repository = VehicleRepository::new(state.pool.clone());
+    let mut vehicle = repository
+        .find(id)
+        .await
+        .map_err(internal_error)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    vehicle
+        .change_rate(input.daily_rate_cents)
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let updated = repository
+        .change_rate(id, vehicle.daily_rate_cents())
+        .await
+        .map_err(internal_error)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(VehicleResponse::from(&updated)))
+}
+
+async fn delete_vehicle(
+    State(state): State<AppState>,
+    Path(id): Path<u32>,
+) -> Result<StatusCode, StatusCode> {
+    let repository = VehicleRepository::new(state.pool.clone());
+    let deleted = repository.delete(id).await.map_err(internal_error)?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+async fn list_customers(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<CustomerResponse>>, StatusCode> {
+    let repository = CustomerRepository::new(state.pool.clone());
+    let customers = repository.list().await.map_err(internal_error)?;
+    Ok(Json(customers.iter().map(CustomerResponse::from).collect()))
+}
+
+async fn create_customer(
+    State(state): State<AppState>,
+    Json(input): Json<CreateCustomer>,
+) -> Result<(StatusCode, Json<CustomerResponse>), StatusCode> {
+    Customer::new(0, input.name.clone(), input.email.clone())
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let repository = CustomerRepository::new(state.pool.clone());
+    // Database uniqueness protects against concurrent duplicate requests.
+    let email_for_conflict_check = input.email.clone();
+    match repository.create(input.name, input.email).await {
+        Ok(customer) => Ok((
+            StatusCode::CREATED,
+            Json(CustomerResponse::from(&customer)),
+        )),
+        Err(error) => {
+            // The simple boxed repository error hides the structured SQLx error.
+            // This follow-up SELECT is sufficient for the local learning exercise,
+            // but a typed repository error is preferable for real applications.
+            if let Ok(true) = repository.email_exists(&email_for_conflict_check).await {
+                return Err(StatusCode::CONFLICT);
+            }
+            eprintln!("Customer insertion failed: {error}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+fn internal_error(error: Box<dyn std::error::Error + Send + Sync>) -> StatusCode {
+    eprintln!("Database or row conversion error: {error}");
+    StatusCode::INTERNAL_SERVER_ERROR
+}
+```
+
+**Ownership note:** The email is cloned before moving fields into `repository.create`. This allows a lookup for the conflict branch. This fallback is educational, not a substitute for a typed uniqueness error; the optional extension improves it.
+
+## 6. Prove persistence and test isolation — Checkpoint D
+
+Create `tests/database.rs` (**FULL FILE**):
+
+```rust
+use rust_rent::{
+    database,
+    repository::{CustomerRepository, VehicleRepository},
+};
+use tempfile::tempdir;
+
+#[tokio::test]
+async fn vehicles_and_customers_survive_new_pool_connections() {
+    let directory = tempdir().expect("temp directory");
+    let path = directory.path().join("rent-test.db");
+    let url = format!("sqlite://{}", path.display());
+
+    let pool = database::connect(&url).await.expect("database and migrations");
+    let vehicles = VehicleRepository::new(pool.clone());
+    let customers = CustomerRepository::new(pool.clone());
+
+    let created_vehicle = vehicles
+        .create("Toyota".into(), "Camry".into(), 2025, 6500)
+        .await
+        .expect("vehicle insert");
+    let created_customer = customers
+        .create("Avery".into(), "avery@example.com".into())
+        .await
+        .expect("customer insert");
+
+    assert_eq!(created_vehicle.make(), "Toyota");
+    assert_eq!(created_customer.email(), "avery@example.com");
+    pool.close().await;
+
+    let reopened = database::connect(&url).await.expect("reopen database");
+    let saved_vehicles = VehicleRepository::new(reopened.clone())
+        .list()
+        .await
+        .expect("vehicle list");
+    let saved_customers = CustomerRepository::new(reopened)
+        .list()
+        .await
+        .expect("customer list");
+
+    assert_eq!(saved_vehicles.len(), 1);
+    assert_eq!(saved_customers.len(), 1);
+}
+```
+
+**Why temporary directories?** A test should never delete or depend on `rust_rent.db`. The test creates its own SQLite file, applies migrations, inserts records, closes the original pool, opens another pool and verifies data still exists. This tests persistence independently of the development server. Note that this does not yet test every HTTP route; Day 7 adds integration and transaction tests.
+
+Run:
+
+```bash
+cargo fmt
+cargo check --all-targets
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo run --bin rust-rent
+```
+
+In a second terminal, while the server runs:
+
+```bash
+curl -i -X POST http://127.0.0.1:3000/vehicles \
+  -H 'Content-Type: application/json' \
+  -d '{"make":"Toyota","model":"Camry","year":2025,"daily_rate_cents":6500}'
+curl -i -X POST http://127.0.0.1:3000/customers \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Avery","email":"avery@example.com"}'
+curl -s http://127.0.0.1:3000/vehicles | jq
+curl -s http://127.0.0.1:3000/customers | jq
+```
+
+Stop the server with Ctrl+C, restart it with `cargo run --bin rust-rent`, and repeat the two GET requests. **The records should still be there.** Do not repeat the same customer POST expecting another success: the schema makes email unique.
+
+You can also inspect the file using `sqlite3 rust_rent.db 'SELECT * FROM vehicles;'`.
+
+## 7. Exercise boundaries and what to understand
+
+**Required:** complete the Section 5 ownership fix before checking the API. Verify the persisted customer and vehicle through a restart.
+
+**Discovery A:** Why did we use `TryFrom<VehicleRow>` instead of making every SQL row field public in the domain? Predict what happens if `year` in SQLite exceeds `u16::MAX`.
+
+**Discovery B:** `delete_vehicle` performs an irreversible database operation, while Day 5's `Fleet::remove` returned an owned `Vehicle`. Explain why SQL delete and vector removal can have different APIs.
+
+**Optional extension:** Make customer duplication handling use a *typed* SQLx error, not the extra `email_exists` query. Keep unique email enforcement at the database level; checking the email before insert is insufficient under concurrent requests.
+
+**Day 6 complete means:** all six existing Day 5 routes plus customer routes read/write SQLite, a restart retains data, isolated persistence tests pass, and you can explain `SqlitePool`, `FromRow`, `TryFrom`, `?`, and why domain validation belongs in `Vehicle` and `Customer`.
+
+**Evidence:** [SQLx pool](https://docs.rs/sqlx/0.9.0/sqlx/struct.Pool.html), [SQLx migrations](https://docs.rs/sqlx/0.9.0/sqlx/macro.migrate.html), [Axum state](https://docs.rs/axum/0.8/axum/extract/struct.State.html), [Rust `TryFrom`](https://doc.rust-lang.org/std/convert/trait.TryFrom.html). This version has **not** been compiled in the authoring environment; do not confuse code review with an actual passing build.
 
 ---
 
