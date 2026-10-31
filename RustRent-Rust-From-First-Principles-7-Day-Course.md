@@ -1,9 +1,9 @@
 # RustRent: Learn Rust From First Principles in Seven Days
 
 **A beginner-first, explanation-led course culminating in a rental-car REST API**  
-**Revision:** 27 October 2026 · **Edition:** Rust 2024 · **Status:** educational draft; compiler execution not verified in this environment
+**Edition:** Rust 2024 · **Project:** RustRent
 
-> **Start here.** This is a **new curriculum**, not a patch to the old RustRent guide. We will retain `Vehicle` as a domain model with methods and evolve it. We do not introduce a web framework until you understand the language underneath it.
+> **Start here.** You'll build a `Vehicle` domain model with methods and evolve it across the course. We do not introduce a web framework until you understand the language underneath it.
 
 ## Who this is for
 
@@ -41,13 +41,21 @@ When you encounter **ILLUSTRATION**, do not paste it into the project expecting 
 
 A **domain object** (e.g. `Vehicle`) owns rules about one object. A **collection** (e.g. `Fleet`) owns a set of objects and search/add operations. A **service** coordinates multiple objects in one business operation (e.g. making a reservation for a customer and vehicle). A **repository** reads and writes persistent data. An **HTTP handler** parses requests and returns responses. These boundaries are useful here, not universal rules for all Rust programs.
 
-**There is no `RentalService` in Days 1–6.** Day 3 discusses what its error type could look like *later*, but does not require implementing it. Day 7 first explains the service's responsibilities, then invites an explicit capstone. We will never tell you to complete an unspecified future operation.
+**There is no `RentalService` in Days 1–6.** Day 3 discusses what its error type could look like *later*, but does not require implementing it. Day 7 implements a guided `ReservationService` and SQL-backed tests. We will never tell you to complete an unspecified future operation.
 
 ### Quality and reproducibility
 
-Treat the snippets as **documentation-reviewed, not compiler-certified** until a CI run verifies each day. Evidence-backed claims link to their primary sources in Appendix B. Where a design choice is an opinion or simplification, it is labeled. For an executable course release, retain a passing source snapshot and `Cargo.lock` for every checkpoint. Do not claim the course is fully runnable until that evidence exists.
+Use each day's commands and expected results to verify your progress on your computer. Appendix B links to the primary documentation for the Rust concepts and libraries used. Keep `Cargo.lock` with your project so the dependency versions are reproducible.
 
 **Common Rust misunderstandings:** `pub struct` does not make its fields public; `use` does not grant visibility; `filter` returns an iterator, `find` returns an `Option`; `clone` may allocate; and `?` propagates errors but does not catch panics. We revisit these as they arise.
+
+## Checking your progress
+
+After you add or replace files, complete all named steps before running a checkpoint: a `pub mod` declaration requires its matching source file to exist. Run `cargo fmt` to format your code, `cargo check` to check compilation, and `cargo test` to run tests. Once you reach Day 4, also use `cargo clippy --all-targets -- -D warnings` where the lesson requires it.
+
+**Warnings versus errors:** Early examples intentionally retain some methods that are not called by the current program. Rust may report these as `dead_code` warnings, even if a method is `pub` inside a binary crate. A warning does not by itself mean that a required example failed. Clippy's `-D warnings` option deliberately makes warnings fail the check, which is why the strict gate starts in Day 4.
+
+If a lesson replaces `src/main.rs` or another file, that new version becomes the starting point for the next step. Your earlier experiments are still useful for learning, but do not blindly append old demonstration code to a replacement file. If something fails, compare the current files with the labeled **FULL FILE** or **ADD** instructions before continuing.
 
 ## Learning roadmap
 
@@ -79,9 +87,9 @@ cargo run
 
 The course uses Rust **edition 2024**. Confirm `edition = "2024"` in Cargo.toml. `cargo new` normally creates `.git` and `.gitignore`; do not overwrite `.gitignore` carelessly. **Commit `Cargo.lock`** for this application. Once an HTTP framework is added, lockfile compatibility matters.
 
-Recommended habits: use `cargo fmt`, `cargo check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`. Do not run `clippy -D warnings` while deliberately leaving unused exercise functions in a snapshot; complete or remove them first.
+Recommended habits: use `cargo fmt`, `cargo check`, and `cargo test` from Day 1. Starting on Day 4, also run `cargo clippy --all-targets -- -D warnings` at the required checkpoints. Earlier binary examples intentionally retain some unused demonstration methods, so their ordinary dead-code warnings are not a failure of the Day 1–3 checkpoints.
 
-**Compiler status:** I can review the design and check official API documentation here, but I cannot execute `cargo` in this runtime. The course does **not** claim that its cumulative snapshots have been built. The commands at each checkpoint are your source of truth; do not mistake documentation review for compilation.
+**Your local compiler is the authority:** run the commands at each checkpoint. If a required command fails, inspect the error and verify you've completed every file edit for that checkpoint before advancing.
 
 ## Five Rust principles to keep in view
 
@@ -119,6 +127,25 @@ fn main() {
 
 Experiment: replace `let available = true` with `let mut available = true; available = false;` and observe what `mut` means. Then remove `mut` and confirm the compiler refuses the reassignment. Rust variables are immutable by default **to make changes explicit**.
 
+### First, practice a function and a condition
+
+Before creating the full vehicle model, replace `src/main.rs` temporarily with this **FULL FILE**:
+
+```rust
+fn daily_cost(days: u32, rate: i64) -> i64 {
+    i64::from(days) * rate
+}
+
+fn main() {
+    let total = daily_cost(3, 6500);
+    if total > 0 {
+        println!("Total: {total} cents");
+    }
+}
+```
+
+Expected: `Total: 19500 cents`. Parameters provide inputs; the last expression in `daily_cost` is its return value; `if` controls whether a statement runs. Change the number of days and predict the output. **Replace this temporary file** with the vehicle FULL FILE below before continuing.
+
 ## 2. From five unrelated variables to one meaningful type
 
 A struct groups related data. An enum enumerates allowed choices. An `impl` block attaches operations to a type. Use the following **FULL FILE**:
@@ -145,7 +172,6 @@ enum VehicleError {
     EmptyMake,
     EmptyModel,
     InvalidRate,
-    UnderMaintenance,
 }
 
 impl Vehicle {
@@ -233,7 +259,7 @@ Run `cargo fmt && cargo run && cargo test`. Predict which operations modify a ve
 
 ### Exercises
 
-1. Add a `mark_ready(&mut self)` method and call it after maintenance.
+1. Add `mark_ready(&mut self)` inside `impl Vehicle`; in `main`, immediately after `car.put_into_maintenance(); car.display();`, add `car.mark_ready(); car.display();`. The final display should show `Ready`.
 2. Make a second vehicle with a bad rate. Print the error instead of panicking.
 3. Explain the difference between `String` and `&str`, and why `new` takes ownership of `String` values.
 
@@ -275,7 +301,7 @@ fn main() {
 }
 ```
 
-Moving transfers ownership; it does not duplicate memory. If both names independently owned the same allocation, freeing both could be unsafe. You have **three distinct options**:
+Moving transfers ownership; it does not duplicate memory. If both names independently owned the same allocation, freeing both could be unsafe. You have **three distinct options** (**ILLUSTRATION**: wrap these statements in a scratch `fn main()`):
 
 ```rust
 let a = String::from("Camry");
@@ -321,7 +347,6 @@ pub enum VehicleError {
     EmptyMake,
     EmptyModel,
     InvalidRate,
-    UnderMaintenance,
 }
 
 #[derive(Debug, Clone)]
@@ -407,7 +432,7 @@ impl Vehicle {
 }
 ```
 
-**Design note:** `UnderMaintenance` is retained as an illustrative typed error for a future operation; merely checking `is_rentable()` produces a Boolean. We don't pretend the error is returned today. Keeping unused public enum variants is fine in this teaching model; do not add dummy handling to silence warnings.
+**Design note:** Rust may warn about unused methods or variants after the Day 2 `main.rs` replacement. Even `pub` methods in a binary crate can be reported as dead code. This is expected for the learning stage, not a build error. Strict Clippy is required after the Day 4 library refactor.
 
 Create `src/fleet.rs` (**FULL FILE**):
 
@@ -480,18 +505,24 @@ fn main() {
 
 `mod` declares the module; `use` imports a name into scope; `pub` decides whether it is accessible. We only use `expect` for deterministic seed data—not for handling arbitrary input in HTTP handlers.
 
+**Day transition:** The Day 2 FULL FILE intentionally replaces Day 1's `main` demonstration and exercise calls, but preserves all vehicle methods in `src/vehicle.rs`. Commit the Day 1 snapshot if you want to replay its CLI demonstration.
+
 ### Visibility experiment (deliberately break, then restore)
 
 1. Remove `pub` from `struct Vehicle`. Run `cargo check` and find the privacy diagnostic; restore.
 2. Remove `pub` from `Vehicle::new`. The type is accessible, but constructing it from `main` is not; restore.
 3. Try `car.make` rather than `car.make()` in `main`. The field is private; the public method is available.
-4. Compare returning `&str` from a getter with returning a cloned `String`. The former borrows from the vehicle; it cannot outlive that vehicle.
+4. In a disposable copy of the Day 2 project, add `let borrowed = car.make(); let owned = car.make().to_owned(); println!("{borrowed} {owned}");` inside `for car in fleet.available()`. The values print identically, but `owned` has an independent `String`. Next try this **EXPECTED COMPILER ERROR** in the scratch project's `src/main.rs`: `fn bad() -> &str { let name = String::from("Camry"); &name }`. The reference cannot outlive `name`. Restore the original version before moving on.
 
 ### Day 2 exercises
 
 **Required:** In `src/fleet.rs`, write `pub fn affordable(&self, maximum_cents: i64) -> Vec<&Vehicle>`. Test it by printing the IDs of vehicles priced below 10,000 cents/day in `main.rs`. Expected: the Camry appears, the Wrangler does not. **Hint:** `iter().filter(...).collect()` and `Vehicle::daily_rate_cents()`.
 
-**Discovery:** Create a program that keeps a borrowed result from `fleet.find(1)`, then tries to modify the fleet with `add` before the borrow's last use. Observe the borrow-checker diagnostic. Rearrange the last use to make the code compile. Explain *why* it becomes valid.
+**Discovery (in a disposable copy of the Day 2 RustRent project, not a new empty crate):** Create a program that keeps a borrowed result from `fleet.find(1)`, then tries to modify the fleet with `add` before the borrow's last use. Observe the borrow-checker diagnostic. Rearrange the last use to make the code compile. Explain *why* it becomes valid.
+
+**Required call site:** In `src/main.rs`, after adding the two vehicles, write `for car in fleet.affordable(10_000) { println!("Affordable: #{}", car.id()); }`. Expect only `Affordable: #1`.
+
+**Why not index by ID?** `fleet.all()[0]` panics on an empty collection, `fleet.all().get(0)` returns `Option<&Vehicle>`, and `fleet.find(1)` searches by a vehicle's actual ID, not its position.
 
 **Worked solution for required exercise:**
 
@@ -523,8 +554,9 @@ A common operation combines them:
 
 ```rust
 // ILLUSTRATION
-fn require_vehicle(fleet: &Fleet, id: u32) -> Result<&Vehicle, RentalError> {
-    fleet.find(id).ok_or(RentalError::VehicleNotFound)
+enum LookupError { VehicleNotFound }
+fn require_vehicle(fleet: &Fleet, id: u32) -> Result<&Vehicle, LookupError> {
+    fleet.find(id).ok_or(LookupError::VehicleNotFound)
 }
 ```
 
@@ -590,7 +622,18 @@ impl Customer {
 
 The email check is **deliberately simplified for practice**, not production-grade email validation. Validation belongs to the domain because every caller, including future HTTP handlers and tests, must obey the same rule.
 
-Add `mod customer;` to `src/main.rs`. Construct two customers, handle a failed construction with `match`, and print them via getters.
+In `src/main.rs`, **ADD** `mod customer;` with the other module declarations and `use customer::Customer;` with the imports. At the end of `main`, add:
+
+```rust
+for (id, name, email) in [(1, "Avery", "avery@example.com"), (2, "Jordan", "jordan@example.com"), (3, "Invalid", "no-at-sign")] {
+    match Customer::new(id, name.into(), email.into()) {
+        Ok(c) => println!("Customer #{}: {} ({})", c.id(), c.name(), c.email()),
+        Err(e) => println!("Customer rejected: {e:?}"),
+    }
+}
+```
+
+Expected: two valid customers followed by `Customer rejected: InvalidEmail`.
 
 ## 4. Make tests part of the design
 
@@ -651,6 +694,32 @@ Add a trait when a real need appears, such as:
 
 Until then, prefer concrete types. We also won’t mirror every struct with an IVehicle-style interface as you might in Java or C#. In Rust it adds code without adding capability, and it’s easy to introduce later if a need appears. 
 
+### Trait practice (separate scratch project)
+
+Try this **FULL FILE** in a new throwaway Cargo project, not RustRent:
+
+```rust
+trait Label {
+    fn label(&self) -> &str;
+}
+
+struct City { name: String }
+
+impl Label for City {
+    fn label(&self) -> &str { &self.name }
+}
+
+fn print_label(item: &impl Label) {
+    println!("{}", item.label());
+}
+
+fn main() {
+    print_label(&City { name: "Augusta".into() });
+}
+```
+
+Run `cargo run` and expect `Augusta`. The trait declares behavior; `impl Label for City` supplies it; `&impl Label` accepts any implementing type. **Do not add this trait to RustRent**, where no such abstraction is needed.
+
 ## 6. Error-design lab: now versus later
 
 **Where you are:** Day 3 has `Vehicle`, `Fleet`, and `Customer`. It does **not** have a reservation service, database, or HTTP routes yet.
@@ -664,15 +733,11 @@ Until then, prefer concrete types. We also won’t mirror every struct with an I
 **Why not assign it now?** A type without an operation that returns it is speculative architecture, not a lesson in `Result`. The Day 3 checkpoint requires only the real `FleetError` exercise below.
 
 
-### Checkpoint
-
-`cargo fmt && cargo test && cargo check`
-
 ### Exercises
 
-1. Write two tests for `Customer::new` (valid and invalid email).
+1. In `src/customer.rs`, add a `#[cfg(test)] mod tests { use super::*; /* tests here */ }` at the end, mirroring the vehicle tests. Test valid and invalid email; expect two more passing tests.
 2. Implement `Fleet::require(id) -> Result<&Vehicle, FleetError>` using `ok_or`.
-3. In `src/main.rs`, add `fn example_vehicle() -> Result<Vehicle, VehicleError>` that calls `Vehicle::new(...)` with `?` and returns `Ok(vehicle)`. Import `VehicleError` from `vehicle` and call the function from `main` with a `match`. Expected: valid data yields `Ok`, invalid rate yields `Err(InvalidRate)`.
+3. In `src/main.rs`, change the import to `use vehicle::{Vehicle, VehicleError};` and define `fn example_vehicle(rate: i64) -> Result<Vehicle, VehicleError> { let vehicle = Vehicle::new(3, "Honda".into(), "Civic".into(), 2025, rate)?; println!("Constructed vehicle #{}", vehicle.id()); Ok(vehicle) }` outside `main`. Inside `main`, call `example_vehicle(6500)` and `example_vehicle(-5)`, using `match` for both. Expected: one `Ok` and one `Err(InvalidRate)`. The `println!` after `?` makes it clear that execution continues only for a valid vehicle. This deliberately uses `?` to practice early error propagation, not just to shorten a one-expression function.
 4. Explain the difference between an inherent method (`impl Vehicle`) and a trait implementation (`impl SomeTrait for Vehicle`).
 
 **Worked answer for exercise 2:**
@@ -689,6 +754,8 @@ pub fn require(&self, id: u32) -> Result<&Vehicle, FleetError> {
     self.find(id).ok_or(FleetError::VehicleNotFound)
 }
 ```
+
+**Final Day 3 checkpoint (after completing required exercises):** Run `cargo fmt && cargo test && cargo check && cargo run`. Your two customer tests should pass alongside the existing vehicle tests, and both the successful and invalid-rate cases of `example_vehicle` should be observable. Ordinary dead-code warnings are possible at this stage.
 
 **Explain it back:** When should a lookup return `Option` versus `Result`? Does `?` execute an exception handler? When should you avoid adding a trait?
 
@@ -728,6 +795,23 @@ async fn main() {
 Predict the output *before* running `cargo run`. You should see “Future created” before “Before waiting.” Why? `greet()` constructs a future; awaiting it drives it. In this experiment, the runtime is supplied by the `#[tokio::main]` attribute. Return to the `rust-rent` project afterward.
 
 **Discovery:** remove `future.await`; predict whether the greeting prints. Then restore it. Read [The Rust Book on futures and async](https://doc.rust-lang.org/book/ch17-00-async-await.html) and [Tokio's tutorial](https://tokio.rs/tokio/tutorial) if the result surprises you.
+
+### Compare sequential and concurrent waits
+
+Return to the separate Day 4 `async-experiment` project. Temporarily replace the contents of its async `main` function with:
+
+```rust
+let started = std::time::Instant::now();
+greet().await;
+greet().await;
+println!("Sequential: {:?}", started.elapsed());
+
+let started = std::time::Instant::now();
+tokio::join!(greet(), greet());
+println!("Concurrent: {:?}", started.elapsed());
+```
+
+The two sequential waits take roughly twice as long as the concurrent pair. `tokio::join!` polls both futures together; it does **not** mean a separate thread is spawned for each. Measurements vary with scheduling. Restore the original experiment when done.
 
 ## 2. Why state must be shared
 
@@ -804,7 +888,7 @@ pub mod vehicle;
 pub mod api;
 ```
 
-The `api` module will be created in the next step. **Remove** `mod vehicle;`, `mod fleet;`, and `mod customer;` declarations from `src/main.rs` when you replace it below. The library's `lib.rs` now declares these modules once. `main.rs` uses `rust_rent::...` to import them from the library. Package name `rust-rent` becomes the crate identifier `rust_rent` under normal Cargo conventions.
+The `api` module is created in Section 6. Complete `src/api.rs` before running the compiler. **Remove** `mod vehicle;`, `mod fleet;`, and `mod customer;` declarations from `src/main.rs` when you replace it below. The library's `lib.rs` now declares these modules once. `main.rs` uses `rust_rent::...` to import them from the library. Package name `rust-rent` becomes the crate identifier `rust_rent` under normal Cargo conventions.
 
 Rust visibility still applies: `pub mod vehicle` allows external code to name the module, but individual fields remain private. We already exposed purposeful methods such as `Vehicle::make()` and `Vehicle::year()` on Day 2. **Do not add `year()` a second time.**
 
@@ -1016,13 +1100,13 @@ Expected: `/health` returns HTTP 200 with `OK`; valid POST returns HTTP 201 and 
 
 ## 8. Exercises: defined objectives, room to discover
 
-**Exercise A (required): Count vehicles.** Starting from the working Day 4 `src/api.rs`, implement `GET /vehicles/count`. It must return JSON `{"count":2}` after creating two vehicles. Reuse `AppState` and read-only fleet access; do not create a new fleet or mutate one. **Hint:** create a small `#[derive(Serialize)]` response struct and a handler returning `Json<...>`. Add the more specific `/vehicles/count` route before Day 5 introduces `/vehicles/{id}`. Verify with `curl`.
+**Exercise A (required): Count vehicles.** The `VehicleCount` type and `count_vehicles` handler do not exist yet in the Day 4 FULL FILE; add both from the worked answer after attempting the exercise. Before completion, the Day 4 application does not expose `/vehicles/count`. Starting from the working Day 4 `src/api.rs`, implement `GET /vehicles/count`. It must return JSON `{"count":2}` after creating two vehicles. Reuse `AppState` and read-only fleet access; do not create a new fleet or mutate one. **Hint:** create a small `#[derive(Serialize)]` response struct and a handler returning `Json<...>`. Add the more specific `/vehicles/count` route before Day 5 introduces `/vehicles/{id}`. Verify with `curl`.
 
 **Exercise B (discovery): Ownership of response strings.** In the `From<&Vehicle>` implementation, attempt to hold borrowed `&str` fields in a response struct. Can that response safely outlive the mutex guard? Why does returning owned `String` avoid that lifetime requirement? Restore the original response afterward. This is deliberately exploratory: the expected outcome is an explanation, not necessarily a compiling borrowed DTO.
 
 **Exercise C (optional extension): Structured validation errors.** For a request with a zero daily rate, return `{"error":"invalid daily rate"}` alongside HTTP 400. Keep the actual validation inside `Vehicle::new`; translate the returned `VehicleError` at the HTTP boundary. Explain why that error string doesn't belong inside the domain model. Day 5 will provide a more systematic error shape.
 
-**Verification checkpoint:** stop the server and run `cargo fmt --check && cargo check --all-targets && cargo test`; then repeat the four HTTP checks above. Tell another learner what `Arc`, `Mutex`, `From<&Vehicle>`, `Json`, `State`, and `.await` each contribute. If you cannot explain one, revisit its isolated experiment before continuing.
+**Verification checkpoint:** stop the server and run `cargo fmt && cargo fmt --check && cargo check --all-targets && cargo test && cargo clippy --all-targets -- -D warnings`; then repeat the four HTTP checks above. Tell another learner what `Arc`, `Mutex`, `From<&Vehicle>`, `Json`, `State`, and `.await` each contribute. If you cannot explain one, revisit its isolated experiment before continuing.
 
 **Worked answer for Exercise A (read after attempting):**
 
@@ -1045,7 +1129,7 @@ async fn count_vehicles(State(state): State<AppState>) -> Result<Json<VehicleCou
 }
 
 // ADD inside router(), before .with_state(state)
-// .route("/vehicles/count", get(count_vehicles))
+.route("/vehicles/count", get(count_vehicles))
 ```
 
 **Before Day 5:** Keep your domain models unchanged; do not add the Day 5 CRUD endpoints yet. The new Rust features this day were async futures, a runtime, shared ownership and synchronization, Serde derives, conversion traits, and Axum extractors—not new vehicle business rules.
@@ -1057,6 +1141,8 @@ async fn count_vehicles(State(state): State<AppState>) -> Result<Json<VehicleCou
 **Outcome:** Implement lookup, update and delete endpoints and customer creation; learn how to shape APIs without embedding domain rules in transport code.
 
 ## 1. HTTP statuses and Rust errors
+
+In Axum, `Result<Json<T>, StatusCode>` produces a default **200 OK** plus JSON on success; `Result<(StatusCode, Json<T>), StatusCode>` explicitly chooses a different success status, such as **201 Created**. Both are idiomatic; the appropriate signature follows HTTP semantics.
 
 HTTP gives a client a standardized result, but the domain should speak in domain language. Map expected failures at the boundary: invalid input → 400, missing record → 404, conflicting operation → 409, unexpected infrastructure failure → 500. Malformed JSON/schema extraction may return Axum's default 400/415/422 text responses unless you customize rejections; **do not claim all errors are your JSON format yet**.
 
@@ -1080,7 +1166,7 @@ The method protects the same invariant enforced by the constructor. This is a ma
 
 ## 2. Add lookup and update routes
 
-In `src/api.rs`, change your Axum imports to include `extract::Path`. Add:
+In `src/api.rs`, change the Axum import to include both extractors: `use axum::{extract::{Path, State}, http::StatusCode, routing::get, Json, Router};`. Add the `ChangeRate` DTO after existing DTOs and the handlers after `create_vehicle`:
 
 ```rust
 // ADD near the other DTOs
@@ -1128,11 +1214,14 @@ Replace the `Router::new()` chain in `router` with:
 Router::new()
     .route("/health", get(|| async { "OK" }))
     .route("/vehicles", get(list_vehicles).post(create_vehicle))
+    .route("/vehicles/count", get(count_vehicles)) // retain Day 4 required route
     .route("/vehicles/{id}", get(get_vehicle).patch(change_rate))
     .with_state(state)
 ```
 
 Why `PATCH` rather than `PUT` here? Because the request changes only a single field; it is a partial update. `PUT` normally means replacing a resource representation. The course makes its contract explicit rather than using the verbs interchangeably.
+
+**Why `Vec::remove`?** Removing an item shifts later elements so order is preserved. `swap_remove` replaces the removed position with the last element and may change order; `retain` removes all elements that do not match a predicate. RustRent uses `remove` because it returns the removed vehicle while retaining list order. With three vehicles, try removing the first and inspect the new order.
 
 ## 3. Deletion and borrowing
 
@@ -1168,7 +1257,7 @@ Update the `/vehicles/{id}` route to:
     get(get_vehicle).patch(change_rate).delete(delete_vehicle))
 ```
 
-This simplified Day 5 in-memory deletion is allowed because reservations haven't been persisted yet. Day 7 introduces database foreign keys and deletion rules.
+This simplified Day 5 in-memory deletion is allowed because reservations haven't been persisted yet. Day 6 introduces SQLite foreign keys and the handling of deletion conflicts.
 
 ## 4. Add customers — fully worked implementation
 
@@ -1291,6 +1380,14 @@ The `CustomerStore` and `Fleet` are separate locks because they are independent 
 
 ## 5. Verify the endpoints
 
+First POST a vehicle to the newly started in-memory server; the previous day's data disappears on restart:
+
+```bash
+curl -i -X POST http://127.0.0.1:3000/vehicles -H 'Content-Type: application/json' -d '{"make":"Toyota","model":"Camry","year":2025,"daily_rate_cents":6500}'
+```
+
+Confirm `GET /vehicles/count` returns `{"count":1}` after that POST and before deletion, then:
+
 ```bash
 curl -i http://127.0.0.1:3000/vehicles/999
 curl -i -X PATCH http://127.0.0.1:3000/vehicles/1 \
@@ -1299,7 +1396,7 @@ curl -i -X PATCH http://127.0.0.1:3000/vehicles/1 \
 curl -i -X DELETE http://127.0.0.1:3000/vehicles/1
 ```
 
-Run `cargo fmt && cargo check && cargo test`. The sequence assumes you created vehicle 1 earlier in the same running process.
+Run `cargo fmt && cargo check && cargo test && cargo clippy --all-targets -- -D warnings`. The sequence assumes you created vehicle 1 earlier in the same running process.
 
 ### Design challenge
 
@@ -1315,7 +1412,7 @@ Why should `Vehicle::change_rate` handle validation even if the handler already 
 
 **Starting point:** Day 5 routes work: `GET/POST /vehicles`, `GET/PATCH/DELETE /vehicles/{id}`, and `GET/POST /customers`. You already have `src/api.rs`, `src/main.rs`, `src/lib.rs`, `src/vehicle.rs`, and `src/customer.rs`.
 
-**Required checkpoints:** (A) database and migration, (B) repository read/write, (C) complete HTTP migration, (D) isolated integration test and restart verification. We replace entire files where indicated so there is no guesswork about how code fits together. This is a longer module; complete each checkpoint before proceeding.
+**Required stages:** (A) create migration/database files, (B) finish the repository module, (C) complete HTTP integration, (D) test persistence. **Do not run the first compilation at A:** `lib.rs` refers to `repository` before that file is created in B. We replace entire files where indicated so there is no guesswork about how code fits together. This is a longer module; complete each checkpoint before proceeding.
 
 ## 1. Mental model: why add another layer?
 
@@ -1325,7 +1422,7 @@ The request path we will implement is:
 
 `HTTP request → Axum handler → VehicleRepository → SQLx connection pool → SQLite`
 
-A read traverses the reverse path: `SQLite row → validated Vehicle → VehicleResponse → JSON`.
+A read traverses the reverse path: `SQLite row → validated Vehicle → VehicleResponse → JSON`. `#[derive(FromRow)]` decodes SQL columns into a storage representation (`VehicleRow`); `TryFrom<VehicleRow>` then validates numeric ranges and reconstitutes the domain object. They are different steps. `u16::try_from(100_000_i64)` fails rather than silently truncating.
 
 Why *not* place SQL in `impl Vehicle`? A vehicle's daily-rate and maintenance rules should work in unit tests or a future CLI without needing SQLite. The repository owns storage decisions. A repository is a concrete struct with an `impl`, **not** a trait merely because it has a repository name.
 
@@ -1499,13 +1596,6 @@ impl TryFrom<VehicleRow> for Vehicle {
     }
 }
 
-fn status_str(status: VehicleStatus) -> &'static str {
-    match status {
-        VehicleStatus::Ready => "ready",
-        VehicleStatus::Maintenance => "maintenance",
-    }
-}
-
 pub struct VehicleRepository {
     pool: SqlitePool,
 }
@@ -1513,6 +1603,13 @@ pub struct VehicleRepository {
 impl VehicleRepository {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    pub async fn count(&self) -> RepoResult<usize> {
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM vehicles")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(usize::try_from(count)?)
     }
 
     pub async fn list(&self) -> RepoResult<Vec<Vehicle>> {
@@ -1639,6 +1736,21 @@ impl CustomerRepository {
 
 **Intentional simplification:** `Box<dyn Error + Send + Sync>` permits several error sources without inventing an unintroduced error hierarchy. A later production design should use a typed repository error. These methods do not by themselves make the HTTP layer persistent; the next section wires that boundary.
 
+### Separate a SQL aggregate from a row conversion
+
+These are **ILLUSTRATIONS** inside an async function that has access to a SQLx pool; do not paste them as another file:
+
+```rust
+let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM vehicles")
+    .fetch_one(&pool).await?;
+
+let first: Option<(i64, String)> =
+    sqlx::query_as("SELECT id, make FROM vehicles LIMIT 1")
+        .fetch_optional(&pool).await?;
+```
+
+`COUNT(*)` returns one row containing a number even when there are no vehicles. The other query can return no row, hence `Option`. A separate `FromRow` conversion decodes database columns; `TryFrom<VehicleRow>` then checks domain invariants. Predict what each query returns on an empty database.
+
 ## 4. Connect the pool to application state — Checkpoint C
 
 **Replace** the Day 5 `AppState`. Previously it had `Arc<Mutex<Fleet>>` and `Arc<Mutex<CustomerStore>>`. It will now contain **only** a database pool. Remove the old `Arc`, `Mutex`, `Fleet` and `CustomerStore` imports from the API module. Don't attempt to access `state.fleet` or `state.customers` from new handlers—they no longer exist.
@@ -1719,6 +1831,9 @@ pub struct VehicleResponse {
     rentable: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct VehicleCount { count: usize }
+
 impl From<&Vehicle> for VehicleResponse {
     fn from(vehicle: &Vehicle) -> Self {
         Self {
@@ -1764,6 +1879,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { "OK" }))
         .route("/vehicles", get(list_vehicles).post(create_vehicle))
+        .route("/vehicles/count", get(count_vehicles))
         .route(
             "/vehicles/{id}",
             get(get_vehicle).patch(change_rate).delete(delete_vehicle),
@@ -1778,6 +1894,14 @@ async fn list_vehicles(
     let repository = VehicleRepository::new(state.pool.clone());
     let vehicles = repository.list().await.map_err(internal_error)?;
     Ok(Json(vehicles.iter().map(VehicleResponse::from).collect()))
+}
+
+async fn count_vehicles(State(state): State<AppState>) -> Result<Json<VehicleCount>, StatusCode> {
+    let count = VehicleRepository::new(state.pool.clone())
+        .count()
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(VehicleCount { count }))
 }
 
 async fn get_vehicle(
@@ -1848,7 +1972,7 @@ async fn delete_vehicle(
     Path(id): Path<u32>,
 ) -> Result<StatusCode, StatusCode> {
     let repository = VehicleRepository::new(state.pool.clone());
-    let deleted = repository.delete(id).await.map_err(internal_error)?;
+    let deleted = repository.delete(id).await.map_err(delete_error_status)?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -1892,11 +2016,24 @@ async fn create_customer(
     }
 }
 
+fn delete_error_status(error: Box<dyn std::error::Error + Send + Sync>) -> StatusCode {
+    if let Some(sqlx::Error::Database(db)) = error.downcast_ref::<sqlx::Error>()
+        && db.is_foreign_key_violation()
+    {
+        return StatusCode::CONFLICT;
+    }
+    internal_error(error)
+}
+
 fn internal_error(error: Box<dyn std::error::Error + Send + Sync>) -> StatusCode {
     eprintln!("Database or row conversion error: {error}");
     StatusCode::INTERNAL_SERVER_ERROR
 }
 ```
+
+**Why this error mapping works:** The repository returns a boxed error, so `downcast_ref::<sqlx::Error>()` asks whether the underlying error is a SQLx error, without taking ownership. `if let Some(sqlx::Error::Database(db)) = ...` extracts only a database error; the `&&` condition additionally requires a foreign-key violation. SQLx provides `is_foreign_key_violation()` so we do not need to memorize SQLite-specific numeric codes. Other errors continue to map to HTTP 500.
+
+**Why counting uses SQL:** `VehicleRepository::count()` returns the aggregate from `SELECT COUNT(*)` without fetching every vehicle row or constructing domain objects. The checked `usize::try_from` handles a theoretical count outside the Rust target type's range. The in-memory Day 4 and Day 5 handlers still count the fleet slice.
 
 **Ownership note:** The email is cloned before moving fields into `repository.create`. This allows a lookup for the conflict branch. This fallback is educational, not a substitute for a typed uniqueness error; the optional extension improves it.
 
@@ -1980,7 +2117,7 @@ You can also inspect the file using `sqlite3 rust_rent.db 'SELECT * FROM vehicle
 
 ## 7. Exercise boundaries and what to understand
 
-**Required:** complete the Section 5 ownership fix before checking the API. Verify the persisted customer and vehicle through a restart.
+**Required:** Observe the **already-completed** Section 5 email ownership pattern: `email_for_conflict_check` is cloned before moving the input into the repository. No additional fix is needed. Verify persistence through a restart.
 
 **Discovery A:** Why did we use `TryFrom<VehicleRow>` instead of making every SQL row field public in the domain? Predict what happens if `year` in SQLite exceeds `u16::MAX`.
 
@@ -1988,9 +2125,9 @@ You can also inspect the file using `sqlite3 rust_rent.db 'SELECT * FROM vehicle
 
 **Optional extension:** Make customer duplication handling use a *typed* SQLx error, not the extra `email_exists` query. Keep unique email enforcement at the database level; checking the email before insert is insufficient under concurrent requests.
 
-**Day 6 complete means:** all six existing Day 5 routes plus customer routes read/write SQLite, a restart retains data, isolated persistence tests pass, and you can explain `SqlitePool`, `FromRow`, `TryFrom`, `?`, and why domain validation belongs in `Vehicle` and `Customer`.
+**Day 6 complete means:** all six vehicle operations (including `/vehicles/count`) and both customer operations from Day 5 use SQLite, a restart retains data, isolated persistence tests pass, and you can explain `SqlitePool`, `FromRow`, `TryFrom`, `?`, and why domain validation belongs in `Vehicle` and `Customer`.
 
-**Evidence:** [SQLx pool](https://docs.rs/sqlx/0.9.0/sqlx/struct.Pool.html), [SQLx migrations](https://docs.rs/sqlx/0.9.0/sqlx/macro.migrate.html), [Axum state](https://docs.rs/axum/0.8/axum/extract/struct.State.html), [Rust `TryFrom`](https://doc.rust-lang.org/std/convert/trait.TryFrom.html). This version has **not** been compiled in the authoring environment; do not confuse code review with an actual passing build.
+**Evidence:** [SQLx pool](https://docs.rs/sqlx/0.9.0/sqlx/struct.Pool.html), [SQLx migrations](https://docs.rs/sqlx/0.9.0/sqlx/macro.migrate.html), [Axum state](https://docs.rs/axum/0.8/axum/extract/struct.State.html), [Rust `TryFrom`](https://doc.rust-lang.org/std/convert/trait.TryFrom.html). Check this code in your own project with the commands above before continuing.
 
 ---
 
@@ -2000,7 +2137,7 @@ You can also inspect the file using `sqlite3 rust_rent.db 'SELECT * FROM vehicle
 
 **Starting point:** The Day 6 `SqlitePool` is already created in `main.rs` and stored in `AppState { pool }`; vehicle and customer routes already use SQLx. Keep the Day 6 migrations and repository unchanged unless instructed below. The `reservations` table already exists; **do not create the table a second time**. This module reuses the same pool, not a new `Arc<Mutex<...>>`.
 
-**Success contract:** Creating a reservation returns 201; invalid date range returns 400; unknown vehicle/customer returns 404; conflicting dates or maintenance vehicle returns 409; cancel returns 200 and releases the date range; a second cancellation returns 200 (idempotent). The booking record survives a restart.
+**Success contract:** A valid reservation returns 201, invalid dates 400, missing vehicle/customer 404, and overlapping dates 409. A vehicle manually marked `maintenance` in SQLite also produces 409; **there is no HTTP maintenance update route**. Cancellation returns 200 and releases the interval. Deleting a vehicle referenced by a reservation returns 409 via the Day 6 foreign-key mapping, **even when the reservation is cancelled**: cancellation changes its status but does not delete the database row or its foreign-key reference. Unreserved vehicles can still be deleted. The booking record survives a restart.
 
 ## 1. Why a reservation is not a vehicle status
 
@@ -2371,6 +2508,12 @@ This service returns `Result<_, RentalError>`. `impl From<sqlx::Error> for Renta
 
 `decode` is intentionally a *fallible* conversion of an untrusted storage row into a domain object. Its `row.map(decode).transpose()` means: no row → `Ok(None)`, valid row → `Ok(Some(...))`, invalid row → `Err(...)`.
 
+### Transaction reasoning experiment
+
+Imagine an existing reservation conflicts with the requested interval. The service starts a transaction, checks availability, and returns an error *before* committing. SQLx rolls back an uncommitted transaction when its guard is dropped. The INSERT is never executed.
+
+After completing the supplied reservation tests, extend the overlap test to compare `SELECT COUNT(*) FROM reservations` before and after the rejected booking. The counts must be equal. This checks that an unsuccessful booking did not create a record. The concurrency test later checks a different problem: two requests arriving together.
+
 ## 4. Why the transaction must include both check and insert
 
 A naïve algorithm checks availability on one connection, then inserts later. Two concurrent requests might both see the vehicle as free. SQLite permits only one writer at a time. Beginning a `BEGIN IMMEDIATE` transaction *before reading availability* serializes competing booking writers for this **local single-database** application. Both the overlap query and insert use `&mut *tx`; they must not independently use `&self.pool`.
@@ -2622,26 +2765,82 @@ async fn simultaneous_conflicting_requests_cannot_both_commit() {
         a.create(vehicle.id(), customer.id(), date(1), date(4)),
         b.create(vehicle.id(), customer.id(), date(1), date(4))
     );
-    let successful = [left, right].into_iter().filter(|result| result.is_ok()).count();
-    assert_eq!(successful, 1, "exactly one writer must book the vehicle");
+    let results = [left, right];
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(results.iter().filter(|result| matches!(result, Err(RentalError::OverlappingReservation))).count(), 1, "the loser must be a domain overlap, not a database failure");
 }
 ```
 
 **Important distinction:** These are **service integration tests** that exercise real SQLite transactions, but not Axum HTTP routing. The `curl` checks above test the routes manually. A follow-on automated HTTP test using Axum's `Router` and `tower::ServiceExt` would be valuable and is not silently claimed here.
 
+### Automated HTTP test: verify the router, not only the service
+
+The SQLite tests above exercise the service layer. Now verify that an actual Axum route reads the database. Add a test-only dependency:
+
+```bash
+cargo add tower@0.5 --dev --features util
+```
+
+Create `tests/http.rs` (**FULL FILE**):
+
+```rust
+use axum::{
+    body::{to_bytes, Body},
+    http::{Request, StatusCode},
+};
+use rust_rent::{
+    api::{router, AppState},
+    database,
+};
+use tempfile::tempdir;
+use tower::ServiceExt;
+
+#[tokio::test]
+async fn empty_vehicles_route_returns_json() {
+    let folder = tempdir().expect("temporary directory");
+    let url = format!("sqlite://{}", folder.path().join("routes.db").display());
+    let pool = database::connect(&url).await.expect("database");
+    let app = router(AppState { pool });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/vehicles")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("router response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    assert_eq!(body.as_ref(), b"[]");
+}
+```
+
+`oneshot` calls the router once in memory, with no network listener. `to_bytes` collects its response body. The database has been migrated but has no vehicles, so the expected JSON is `[]`. Run `cargo fmt && cargo test --test http`. The optional HTTP exercise below extends this example with an overlapping reservation, which should return 409.
+
 ## 8. Discovery exercises — no unspecified future services
 
-**Exercise A (required, given starting point):** In `tests/reservations.rs`, add a test that attempts a rental where `start_date == end_date`. Starting point: create a temporary pool, vehicle, customer and service as above. Expected: `Err(RentalError::InvalidDateRange)` and no inserted row. **Hint:** date validation happens before `begin_with`.
+**Exercise A (required, given starting point):** In `tests/reservations.rs`, add a test that attempts a rental where `start_date == end_date`. Starting point: create a temporary pool, vehicle, customer and service as above. Expected: `Err(RentalError::InvalidDateRange)` and no inserted row. **Hint:** the validation precedes `begin_with`. Use `sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM reservations").fetch_one(&pool).await` and assert the count is zero.
 
-**Exercise B (required):** Add a test in which `Vehicle::put_into_maintenance()` conceptually makes a car unavailable, but in SQLite you must update the vehicle row to `status = 'maintenance'` through a parameter-bound `sqlx::query` before creating the reservation. Expected: `Err(RentalError::VehicleUnavailable)`. Explain why `Vehicle` still owns the meaning of maintenance while the repository/service reads persisted status.
+**Exercise B (required):** Add a test in which `Vehicle::put_into_maintenance()` conceptually makes a car unavailable, but in SQLite you must update the vehicle row to `status = 'maintenance'` through a parameter-bound `sqlx::query` before creating the reservation. Expected: `Err(RentalError::VehicleUnavailable)`. Explain the actual tradeoff: this reservation service compares the raw persisted status string, rather than calling `Vehicle::is_rentable()`. How could reconstructing a domain `Vehicle` remove this duplication?
 
 **Exercise C (optional):** Add structured JSON errors to Axum by implementing `IntoResponse` on a transport `ApiError`. Map `RentalError` variants to 400/404/409/500 without moving HTTP status codes into the domain. Keep Axum's JSON-extraction errors separate unless you deliberately customize their rejection handling.
 
-**Exercise D (optional):** Add an HTTP integration test and verify response status codes using `tower::ServiceExt::oneshot`. This extends, rather than replaces, the supplied SQLite transaction test.
+**Exercise D (optional):** Extend the worked HTTP test above to POST a reservation that overlaps an existing one, and assert HTTP 409 using `tower::ServiceExt::oneshot`. Start with the isolated test database, insert a vehicle/customer and first booking, then submit the conflicting JSON request. This complements, rather than replaces, the SQLite service tests.
 
-**Done means:** You can explain why reservation availability is date-dependent, why `From<sqlx::Error>` enables `?`, why the transaction must acquire the write lock before checking overlap, how `AppState.pool` is reused, and why stored totals cannot be blindly recalculated. Run `cargo fmt --check`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`. **These commands have not been run by the authoring environment.**
+**Done means:** You can explain why reservation availability is date-dependent, why `From<sqlx::Error>` enables `?`, why the transaction must acquire the write lock before checking overlap, how `AppState.pool` is reused, and why stored totals cannot be blindly recalculated. **First run `cargo fmt` after creating `tests/reservations.rs`.** Then run `cargo fmt --check`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`. Complete these commands locally before marking the lesson finished.
 
-**Evidence and limitations:** [Rust error conversions](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html), [SQLx Pool::begin_with](https://docs.rs/sqlx/0.9.0/sqlx/struct.Pool.html), [SQLite transactions](https://www.sqlite.org/lang_transaction.html), [Chrono NaiveDate](https://docs.rs/chrono/0.4/chrono/struct.NaiveDate.html), [Axum state](https://docs.rs/axum/0.8/axum/extract/struct.State.html). This is a guided local learning implementation, **not** a claim of production readiness or exhaustively tested concurrency safety.
+**Evidence and limitations:** [Rust error conversions](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html), [SQLx Pool::begin_with](https://docs.rs/sqlx/0.9.0/sqlx/struct.Pool.html), [SQLite transactions](https://www.sqlite.org/lang_transaction.html), [Chrono NaiveDate](https://docs.rs/chrono/0.4/chrono/struct.NaiveDate.html), [Axum state](https://docs.rs/axum/0.8/axum/extract/struct.State.html). This is a local learning implementation, not a production booking system; its concurrency guarantees are limited to the SQLite transaction design described above.
+
+---
+
+## Independent final challenge
+
+Add `GET /customers/{id}/reservations`, listing confirmed and cancelled bookings for a customer. **Start:** Day 7's `AppState.pool`, row decoder, reservation service and response type. **Goal:** add a parameter-bound query, service method, handler, route and a test. **Verify:** a customer with two bookings gets two records; a known customer with none gets an empty array; an unknown customer gets 404. **Hint:** `fetch_all`, `map(decode)` and `collect::<Result<Vec<_>, _>>()`. This is an optional transfer-of-learning challenge, not a prerequisite.
 
 ---
 
@@ -2686,7 +2885,7 @@ Explain: a car can be operational but already reserved on certain dates. Checkin
 - **SQLx 0.9 docs** — https://docs.rs/sqlx/0.9.0/sqlx/ — pools, queries, migrations and transactions.
 
 
-## Evidence and design-decision ledger (reviewed 29 October 2026)
+## Sources and design decisions
 
 | Claim or decision | Evidence | Course interpretation |
 |---|---|---|
@@ -2713,9 +2912,10 @@ Explain: a car can be operational but already reserved on certain dates. Checkin
 | `422` from JSON extractor | JSON structurally valid but wrong shape | Compare expected fields and types |
 | `database is locked` | SQLite concurrent writes | Revisit transaction duration and busy timeout |
 
-# Appendix D — Course quality standard and known limitations
+# Appendix D — Project scope and next steps
 
-A quality-reviewed course should ship compilable checkpoints, formatter output, tested reference projects and reproducible `Cargo.lock` files. This edition **has not passed that bar yet**; Rust/Cargo could not be run in the authoring environment. Day 7 now supplies a guided reservation service, HTTP handlers and SQLite integration tests, but the source has not been compiler-verified in this authoring environment. These are meaningful remaining gaps if your requirement is a fully independently executable workbook. Verify each lesson locally, and treat compiler errors as issues to correct, not as evidence that you misunderstood the language.
+RustRent is a local teaching application. It deliberately leaves out authentication, payments, deployments, observability and distributed reservation coordination. Its introductory email validation is not production-grade, and database errors are simplified to keep the focus on Rust, SQLx and HTTP.
 
-**Next engineering validation:** package one `day-01` through `day-07` source snapshot per checkpoint; run `cargo check`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` on each in a clean Rust 2024 environment; run HTTP smoke tests for Days 4, 5, 6 and 7. Record OS, `rustc --version`, resolved crate versions, and output logs. No such run is claimed here.
+You can strengthen the project after finishing Day 7: automate HTTP route tests, replace boxed repository errors with a typed error enum, introduce configuration for environments, and improve the database model for real rental operations. Add features incrementally, running `cargo fmt`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` after each change.
 
+To revisit a difficult lesson, retain your end-of-day source snapshots or commits. That lets you compare your code before and after the introduction of ownership, HTTP state, or SQLite without risking your completed project.
