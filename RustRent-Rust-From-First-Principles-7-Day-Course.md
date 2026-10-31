@@ -127,6 +127,25 @@ fn main() {
 
 Experiment: replace `let available = true` with `let mut available = true; available = false;` and observe what `mut` means. Then remove `mut` and confirm the compiler refuses the reassignment. Rust variables are immutable by default **to make changes explicit**.
 
+### First, practice a function and a condition
+
+Before creating the full vehicle model, replace `src/main.rs` temporarily with this **FULL FILE**:
+
+```rust
+fn daily_cost(days: u32, rate: i64) -> i64 {
+    i64::from(days) * rate
+}
+
+fn main() {
+    let total = daily_cost(3, 6500);
+    if total > 0 {
+        println!("Total: {total} cents");
+    }
+}
+```
+
+Expected: `Total: 19500 cents`. Parameters provide inputs; the last expression in `daily_cost` is its return value; `if` controls whether a statement runs. Change the number of days and predict the output. **Replace this temporary file** with the vehicle FULL FILE below before continuing.
+
 ## 2. From five unrelated variables to one meaningful type
 
 A struct groups related data. An enum enumerates allowed choices. An `impl` block attaches operations to a type. Use the following **FULL FILE**:
@@ -493,7 +512,7 @@ fn main() {
 1. Remove `pub` from `struct Vehicle`. Run `cargo check` and find the privacy diagnostic; restore.
 2. Remove `pub` from `Vehicle::new`. The type is accessible, but constructing it from `main` is not; restore.
 3. Try `car.make` rather than `car.make()` in `main`. The field is private; the public method is available.
-4. Compare returning `&str` from a getter with returning a cloned `String`. The former borrows from the vehicle; it cannot outlive that vehicle.
+4. In a disposable copy of the Day 2 project, add `let borrowed = car.make(); let owned = car.make().to_owned(); println!("{borrowed} {owned}");` inside `for car in fleet.available()`. The values print identically, but `owned` has an independent `String`. Next try this **EXPECTED COMPILER ERROR** in the scratch project's `src/main.rs`: `fn bad() -> &str { let name = String::from("Camry"); &name }`. The reference cannot outlive `name`. Restore the original version before moving on.
 
 ### Day 2 exercises
 
@@ -675,6 +694,32 @@ Add a trait when a real need appears, such as:
 
 Until then, prefer concrete types. We also won’t mirror every struct with an IVehicle-style interface as you might in Java or C#. In Rust it adds code without adding capability, and it’s easy to introduce later if a need appears. 
 
+### Trait practice (separate scratch project)
+
+Try this **FULL FILE** in a new throwaway Cargo project, not RustRent:
+
+```rust
+trait Label {
+    fn label(&self) -> &str;
+}
+
+struct City { name: String }
+
+impl Label for City {
+    fn label(&self) -> &str { &self.name }
+}
+
+fn print_label(item: &impl Label) {
+    println!("{}", item.label());
+}
+
+fn main() {
+    print_label(&City { name: "Augusta".into() });
+}
+```
+
+Run `cargo run` and expect `Augusta`. The trait declares behavior; `impl Label for City` supplies it; `&impl Label` accepts any implementing type. **Do not add this trait to RustRent**, where no such abstraction is needed.
+
 ## 6. Error-design lab: now versus later
 
 **Where you are:** Day 3 has `Vehicle`, `Fleet`, and `Customer`. It does **not** have a reservation service, database, or HTTP routes yet.
@@ -687,10 +732,6 @@ Until then, prefer concrete types. We also won’t mirror every struct with an I
 
 **Why not assign it now?** A type without an operation that returns it is speculative architecture, not a lesson in `Result`. The Day 3 checkpoint requires only the real `FleetError` exercise below.
 
-
-### Checkpoint
-
-`cargo fmt && cargo test && cargo check`
 
 ### Exercises
 
@@ -713,6 +754,8 @@ pub fn require(&self, id: u32) -> Result<&Vehicle, FleetError> {
     self.find(id).ok_or(FleetError::VehicleNotFound)
 }
 ```
+
+**Final Day 3 checkpoint (after completing required exercises):** Run `cargo fmt && cargo test && cargo check && cargo run`. Your two customer tests should pass alongside the existing vehicle tests, and both the successful and invalid-rate cases of `example_vehicle` should be observable. Ordinary dead-code warnings are possible at this stage.
 
 **Explain it back:** When should a lookup return `Option` versus `Result`? Does `?` execute an exception handler? When should you avoid adding a trait?
 
@@ -752,6 +795,23 @@ async fn main() {
 Predict the output *before* running `cargo run`. You should see “Future created” before “Before waiting.” Why? `greet()` constructs a future; awaiting it drives it. In this experiment, the runtime is supplied by the `#[tokio::main]` attribute. Return to the `rust-rent` project afterward.
 
 **Discovery:** remove `future.await`; predict whether the greeting prints. Then restore it. Read [The Rust Book on futures and async](https://doc.rust-lang.org/book/ch17-00-async-await.html) and [Tokio's tutorial](https://tokio.rs/tokio/tutorial) if the result surprises you.
+
+### Compare sequential and concurrent waits
+
+Return to the separate Day 4 `async-experiment` project. Temporarily replace the contents of its async `main` function with:
+
+```rust
+let started = std::time::Instant::now();
+greet().await;
+greet().await;
+println!("Sequential: {:?}", started.elapsed());
+
+let started = std::time::Instant::now();
+tokio::join!(greet(), greet());
+println!("Concurrent: {:?}", started.elapsed());
+```
+
+The two sequential waits take roughly twice as long as the concurrent pair. `tokio::join!` polls both futures together; it does **not** mean a separate thread is spawned for each. Measurements vary with scheduling. Restore the original experiment when done.
 
 ## 2. Why state must be shared
 
@@ -1161,6 +1221,8 @@ Router::new()
 
 Why `PATCH` rather than `PUT` here? Because the request changes only a single field; it is a partial update. `PUT` normally means replacing a resource representation. The course makes its contract explicit rather than using the verbs interchangeably.
 
+**Why `Vec::remove`?** Removing an item shifts later elements so order is preserved. `swap_remove` replaces the removed position with the last element and may change order; `retain` removes all elements that do not match a predicate. RustRent uses `remove` because it returns the removed vehicle while retaining list order. With three vehicles, try removing the first and inspect the new order.
+
 ## 3. Deletion and borrowing
 
 Add **inside `impl Fleet`**:
@@ -1324,7 +1386,7 @@ First POST a vehicle to the newly started in-memory server; the previous day's d
 curl -i -X POST http://127.0.0.1:3000/vehicles -H 'Content-Type: application/json' -d '{"make":"Toyota","model":"Camry","year":2025,"daily_rate_cents":6500}'
 ```
 
-Confirm `GET /vehicles/count` still works, then:
+Confirm `GET /vehicles/count` returns `{"count":1}` after that POST and before deletion, then:
 
 ```bash
 curl -i http://127.0.0.1:3000/vehicles/999
@@ -1673,6 +1735,21 @@ impl CustomerRepository {
 **What is Rust teaching here?** `FromRow` is a derive macro for decoding SQL columns; `TryFrom<VehicleRow>` is a fallible conversion into the *validated* domain. `?` propagates either SQL errors or integer conversion errors. `row.map(...).transpose()` turns `Option<Result<T, E>>` into `Result<Option<T>, E>`: a missing database record is not the same as an I/O failure.
 
 **Intentional simplification:** `Box<dyn Error + Send + Sync>` permits several error sources without inventing an unintroduced error hierarchy. A later production design should use a typed repository error. These methods do not by themselves make the HTTP layer persistent; the next section wires that boundary.
+
+### Separate a SQL aggregate from a row conversion
+
+These are **ILLUSTRATIONS** inside an async function that has access to a SQLx pool; do not paste them as another file:
+
+```rust
+let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM vehicles")
+    .fetch_one(&pool).await?;
+
+let first: Option<(i64, String)> =
+    sqlx::query_as("SELECT id, make FROM vehicles LIMIT 1")
+        .fetch_optional(&pool).await?;
+```
+
+`COUNT(*)` returns one row containing a number even when there are no vehicles. The other query can return no row, hence `Option`. A separate `FromRow` conversion decodes database columns; `TryFrom<VehicleRow>` then checks domain invariants. Predict what each query returns on an empty database.
 
 ## 4. Connect the pool to application state — Checkpoint C
 
@@ -2430,6 +2507,12 @@ impl ReservationService {
 This service returns `Result<_, RentalError>`. `impl From<sqlx::Error> for RentalError` tells Rust how to turn SQLx failures into this error type. `impl From<ReservationError>` does the same for validated domain construction. Thus `?` can propagate either kind without a manual `match` at each call.
 
 `decode` is intentionally a *fallible* conversion of an untrusted storage row into a domain object. Its `row.map(decode).transpose()` means: no row → `Ok(None)`, valid row → `Ok(Some(...))`, invalid row → `Err(...)`.
+
+### Transaction reasoning experiment
+
+Imagine an existing reservation conflicts with the requested interval. The service starts a transaction, checks availability, and returns an error *before* committing. SQLx rolls back an uncommitted transaction when its guard is dropped. The INSERT is never executed.
+
+After completing the supplied reservation tests, extend the overlap test to compare `SELECT COUNT(*) FROM reservations` before and after the rejected booking. The counts must be equal. This checks that an unsuccessful booking did not create a record. The concurrency test later checks a different problem: two requests arriving together.
 
 ## 4. Why the transaction must include both check and insert
 
