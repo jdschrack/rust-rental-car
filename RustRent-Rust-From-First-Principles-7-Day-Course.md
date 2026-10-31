@@ -87,7 +87,7 @@ cargo run
 
 The course uses Rust **edition 2024**. Confirm `edition = "2024"` in Cargo.toml. `cargo new` normally creates `.git` and `.gitignore`; do not overwrite `.gitignore` carelessly. **Commit `Cargo.lock`** for this application. Once an HTTP framework is added, lockfile compatibility matters.
 
-Recommended habits: use `cargo fmt`, `cargo check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`. Do not run `clippy -D warnings` while deliberately leaving unused exercise functions in a snapshot; complete or remove them first.
+Recommended habits: use `cargo fmt`, `cargo check`, and `cargo test` from Day 1. Starting on Day 4, also run `cargo clippy --all-targets -- -D warnings` at the required checkpoints. Earlier binary examples intentionally retain some unused demonstration methods, so their ordinary dead-code warnings are not a failure of the Day 1–3 checkpoints.
 
 **Your local compiler is the authority:** run the commands at each checkpoint. If a required command fails, inspect the error and verify you've completed every file edit for that checkpoint before advancing.
 
@@ -696,7 +696,7 @@ Until then, prefer concrete types. We also won’t mirror every struct with an I
 
 1. In `src/customer.rs`, add a `#[cfg(test)] mod tests { use super::*; /* tests here */ }` at the end, mirroring the vehicle tests. Test valid and invalid email; expect two more passing tests.
 2. Implement `Fleet::require(id) -> Result<&Vehicle, FleetError>` using `ok_or`.
-3. In `src/main.rs`, change the import to `use vehicle::{Vehicle, VehicleError};` and define `fn example_vehicle(rate: i64) -> Result<Vehicle, VehicleError> { Vehicle::new(3, "Honda".into(), "Civic".into(), 2025, rate) }` outside `main`. Inside `main`, call `example_vehicle(6500)` and `example_vehicle(-5)`, using `match` for both. Expected: one `Ok` and one `Err(InvalidRate)`.
+3. In `src/main.rs`, change the import to `use vehicle::{Vehicle, VehicleError};` and define `fn example_vehicle(rate: i64) -> Result<Vehicle, VehicleError> { let vehicle = Vehicle::new(3, "Honda".into(), "Civic".into(), 2025, rate)?; println!("Constructed vehicle #{}", vehicle.id()); Ok(vehicle) }` outside `main`. Inside `main`, call `example_vehicle(6500)` and `example_vehicle(-5)`, using `match` for both. Expected: one `Ok` and one `Err(InvalidRate)`. The `println!` after `?` makes it clear that execution continues only for a valid vehicle. This deliberately uses `?` to practice early error propagation, not just to shorten a one-expression function.
 4. Explain the difference between an inherent method (`impl Vehicle`) and a trait implementation (`impl SomeTrait for Vehicle`).
 
 **Worked answer for exercise 2:**
@@ -1543,6 +1543,13 @@ impl VehicleRepository {
         Self { pool }
     }
 
+    pub async fn count(&self) -> RepoResult<usize> {
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM vehicles")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(usize::try_from(count)?)
+    }
+
     pub async fn list(&self) -> RepoResult<Vec<Vehicle>> {
         let rows: Vec<VehicleRow> = sqlx::query_as(
             "SELECT id, make, model, year, daily_rate_cents, status \
@@ -1813,8 +1820,11 @@ async fn list_vehicles(
 }
 
 async fn count_vehicles(State(state): State<AppState>) -> Result<Json<VehicleCount>, StatusCode> {
-    let vehicles = VehicleRepository::new(state.pool.clone()).list().await.map_err(internal_error)?;
-    Ok(Json(VehicleCount { count: vehicles.len() }))
+    let count = VehicleRepository::new(state.pool.clone())
+        .count()
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(VehicleCount { count }))
 }
 
 async fn get_vehicle(
@@ -1931,7 +1941,7 @@ async fn create_customer(
 
 fn delete_error_status(error: Box<dyn std::error::Error + Send + Sync>) -> StatusCode {
     if let Some(sqlx::Error::Database(db)) = error.downcast_ref::<sqlx::Error>()
-        && db.code().as_deref() == Some("787")
+        && db.is_foreign_key_violation()
     {
         return StatusCode::CONFLICT;
     }
@@ -1943,6 +1953,10 @@ fn internal_error(error: Box<dyn std::error::Error + Send + Sync>) -> StatusCode
     StatusCode::INTERNAL_SERVER_ERROR
 }
 ```
+
+**Why this error mapping works:** The repository returns a boxed error, so `downcast_ref::<sqlx::Error>()` asks whether the underlying error is a SQLx error, without taking ownership. `if let Some(sqlx::Error::Database(db)) = ...` extracts only a database error; the `&&` condition additionally requires a foreign-key violation. SQLx provides `is_foreign_key_violation()` so we do not need to memorize SQLite-specific numeric codes. Other errors continue to map to HTTP 500.
+
+**Why counting uses SQL:** `VehicleRepository::count()` returns the aggregate from `SELECT COUNT(*)` without fetching every vehicle row or constructing domain objects. The checked `usize::try_from` handles a theoretical count outside the Rust target type's range. The in-memory Day 4 and Day 5 handlers still count the fleet slice.
 
 **Ownership note:** The email is cloned before moving fields into `repository.create`. This allows a lookup for the conflict branch. This fallback is educational, not a substitute for a typed uniqueness error; the optional extension improves it.
 
@@ -2034,7 +2048,7 @@ You can also inspect the file using `sqlite3 rust_rent.db 'SELECT * FROM vehicle
 
 **Optional extension:** Make customer duplication handling use a *typed* SQLx error, not the extra `email_exists` query. Keep unique email enforcement at the database level; checking the email before insert is insufficient under concurrent requests.
 
-**Day 6 complete means:** all five vehicle operations and two customer operations from Day 5 use SQLite, a restart retains data, isolated persistence tests pass, and you can explain `SqlitePool`, `FromRow`, `TryFrom`, `?`, and why domain validation belongs in `Vehicle` and `Customer`.
+**Day 6 complete means:** all six vehicle operations (including `/vehicles/count`) and both customer operations from Day 5 use SQLite, a restart retains data, isolated persistence tests pass, and you can explain `SqlitePool`, `FromRow`, `TryFrom`, `?`, and why domain validation belongs in `Vehicle` and `Customer`.
 
 **Evidence:** [SQLx pool](https://docs.rs/sqlx/0.9.0/sqlx/struct.Pool.html), [SQLx migrations](https://docs.rs/sqlx/0.9.0/sqlx/macro.migrate.html), [Axum state](https://docs.rs/axum/0.8/axum/extract/struct.State.html), [Rust `TryFrom`](https://doc.rust-lang.org/std/convert/trait.TryFrom.html). Check this code in your own project with the commands above before continuing.
 
@@ -2046,7 +2060,7 @@ You can also inspect the file using `sqlite3 rust_rent.db 'SELECT * FROM vehicle
 
 **Starting point:** The Day 6 `SqlitePool` is already created in `main.rs` and stored in `AppState { pool }`; vehicle and customer routes already use SQLx. Keep the Day 6 migrations and repository unchanged unless instructed below. The `reservations` table already exists; **do not create the table a second time**. This module reuses the same pool, not a new `Arc<Mutex<...>>`.
 
-**Success contract:** A valid reservation returns 201, invalid dates 400, missing vehicle/customer 404, and overlapping dates 409. A vehicle manually marked `maintenance` in SQLite also produces 409; **there is no HTTP maintenance update route**. Cancellation returns 200 and releases the interval. Deleting a vehicle referenced by a reservation returns 409 via the Day 6 foreign-key mapping. The booking record survives a restart.
+**Success contract:** A valid reservation returns 201, invalid dates 400, missing vehicle/customer 404, and overlapping dates 409. A vehicle manually marked `maintenance` in SQLite also produces 409; **there is no HTTP maintenance update route**. Cancellation returns 200 and releases the interval. Deleting a vehicle referenced by a reservation returns 409 via the Day 6 foreign-key mapping, **even when the reservation is cancelled**: cancellation changes its status but does not delete the database row or its foreign-key reference. Unreserved vehicles can still be deleted. The booking record survives a restart.
 
 ## 1. Why a reservation is not a vehicle status
 
