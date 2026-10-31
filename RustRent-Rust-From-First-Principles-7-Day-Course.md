@@ -1,9 +1,9 @@
 # RustRent: Learn Rust From First Principles in Seven Days
 
 **A beginner-first, explanation-led course culminating in a rental-car REST API**  
-**Revision:** 30 October 2026 · **Edition:** Rust 2024 · **Status:** educational draft; compiler execution not verified in this environment
+**Edition:** Rust 2024 · **Project:** RustRent
 
-> **Start here.** This is a **new curriculum**, not a patch to the old RustRent guide. We will retain `Vehicle` as a domain model with methods and evolve it. We do not introduce a web framework until you understand the language underneath it.
+> **Start here.** You'll build a `Vehicle` domain model with methods and evolve it across the course. We do not introduce a web framework until you understand the language underneath it.
 
 ## Who this is for
 
@@ -45,19 +45,17 @@ A **domain object** (e.g. `Vehicle`) owns rules about one object. A **collection
 
 ### Quality and reproducibility
 
-Treat the snippets as **documentation-reviewed, not compiler-certified** until a CI run verifies each day. Evidence-backed claims link to their primary sources in Appendix B. Where a design choice is an opinion or simplification, it is labeled. For an executable course release, retain a passing source snapshot and `Cargo.lock` for every checkpoint. Do not claim the course is fully runnable until that evidence exists.
+Use each day's commands and expected results to verify your progress on your computer. Appendix B links to the primary documentation for the Rust concepts and libraries used. Keep `Cargo.lock` with your project so the dependency versions are reproducible.
 
 **Common Rust misunderstandings:** `pub struct` does not make its fields public; `use` does not grant visibility; `filter` returns an iterator, `find` returns an `Option`; `clone` may allocate; and `?` propagates errors but does not catch panics. We revisit these as they arise.
 
-## Revision rationale and verification
+## Checking your progress
 
-An independent beginner's issue report documents a literal run on Arch Linux with Rust/Cargo 1.99.1, Axum 0.8.9 and SQLx 0.9.0. The learner reported **12 passing tests** and successful persistence across server restarts, but found broken strict-Clippy/format gates, disappearing functionality and underspecified required exercises.
+After you add or replace files, complete all named steps before running a checkpoint: a `pub mod` declaration requires its matching source file to exist. Run `cargo fmt` to format your code, `cargo check` to check compilation, and `cargo test` to run tests. Once you reach Day 4, also use `cargo clippy --all-targets -- -D warnings` where the lesson requires it.
 
-This revision targets those findings in order: **(1)** truthful verification gates and removal of unused supplied code; **(2)** continuity when modules and routes are replaced; **(3)** specific insertion points and inputs for required exercises; **(4)** accurate reservation and deletion HTTP contracts; **(5)** small conceptual comparisons and a final independent feature exercise.
+**Warnings versus errors:** Early examples intentionally retain some methods that are not called by the current program. Rust may report these as `dead_code` warnings, even if a method is `pub` inside a binary crate. A warning does not by itself mean that a required example failed. Clippy's `-D warnings` option deliberately makes warnings fail the check, which is why the strict gate starts in Day 4.
 
-**Checkpoint rules:** Ordinary `cargo check` permits warnings; `cargo clippy --all-targets -- -D warnings` treats them as errors. Public methods in a binary crate may still be considered dead code. On Days 1–3, passing the prescribed build/test and observing expected warnings is sufficient; strict Clippy becomes a required gate once the library exists on Day 4. A multi-file step is not compile-ready until all modules it declares exist. Run `cargo fmt` **before** `cargo fmt --check` after adding source listings.
-
-
+If a lesson replaces `src/main.rs` or another file, that new version becomes the starting point for the next step. Your earlier experiments are still useful for learning, but do not blindly append old demonstration code to a replacement file. If something fails, compare the current files with the labeled **FULL FILE** or **ADD** instructions before continuing.
 
 ## Learning roadmap
 
@@ -91,7 +89,7 @@ The course uses Rust **edition 2024**. Confirm `edition = "2024"` in Cargo.toml.
 
 Recommended habits: use `cargo fmt`, `cargo check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`. Do not run `clippy -D warnings` while deliberately leaving unused exercise functions in a snapshot; complete or remove them first.
 
-**Compiler status:** I can review the design and check official API documentation here, but I cannot execute `cargo` in this runtime. The course does **not** claim that its cumulative snapshots have been built. The commands at each checkpoint are your source of truth; do not mistake documentation review for compilation.
+**Your local compiler is the authority:** run the commands at each checkpoint. If a required command fails, inspect the error and verify you've completed every file edit for that checkpoint before advancing.
 
 ## Five Rust principles to keep in view
 
@@ -2038,7 +2036,7 @@ You can also inspect the file using `sqlite3 rust_rent.db 'SELECT * FROM vehicle
 
 **Day 6 complete means:** all five vehicle operations and two customer operations from Day 5 use SQLite, a restart retains data, isolated persistence tests pass, and you can explain `SqlitePool`, `FromRow`, `TryFrom`, `?`, and why domain validation belongs in `Vehicle` and `Customer`.
 
-**Evidence:** [SQLx pool](https://docs.rs/sqlx/0.9.0/sqlx/struct.Pool.html), [SQLx migrations](https://docs.rs/sqlx/0.9.0/sqlx/macro.migrate.html), [Axum state](https://docs.rs/axum/0.8/axum/extract/struct.State.html), [Rust `TryFrom`](https://doc.rust-lang.org/std/convert/trait.TryFrom.html). This version has **not** been compiled in the authoring environment; do not confuse code review with an actual passing build.
+**Evidence:** [SQLx pool](https://docs.rs/sqlx/0.9.0/sqlx/struct.Pool.html), [SQLx migrations](https://docs.rs/sqlx/0.9.0/sqlx/macro.migrate.html), [Axum state](https://docs.rs/axum/0.8/axum/extract/struct.State.html), [Rust `TryFrom`](https://doc.rust-lang.org/std/convert/trait.TryFrom.html). Check this code in your own project with the commands above before continuing.
 
 ---
 
@@ -2688,9 +2686,9 @@ async fn simultaneous_conflicting_requests_cannot_both_commit() {
 
 **Exercise D (optional):** Add an HTTP integration test and verify response status codes using `tower::ServiceExt::oneshot`. This extends, rather than replaces, the supplied SQLite transaction test.
 
-**Done means:** You can explain why reservation availability is date-dependent, why `From<sqlx::Error>` enables `?`, why the transaction must acquire the write lock before checking overlap, how `AppState.pool` is reused, and why stored totals cannot be blindly recalculated. **First run `cargo fmt` after creating `tests/reservations.rs`.** Then run `cargo fmt --check`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`. **These commands have not been run by the authoring environment.**
+**Done means:** You can explain why reservation availability is date-dependent, why `From<sqlx::Error>` enables `?`, why the transaction must acquire the write lock before checking overlap, how `AppState.pool` is reused, and why stored totals cannot be blindly recalculated. **First run `cargo fmt` after creating `tests/reservations.rs`.** Then run `cargo fmt --check`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`. Complete these commands locally before marking the lesson finished.
 
-**Evidence and limitations:** [Rust error conversions](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html), [SQLx Pool::begin_with](https://docs.rs/sqlx/0.9.0/sqlx/struct.Pool.html), [SQLite transactions](https://www.sqlite.org/lang_transaction.html), [Chrono NaiveDate](https://docs.rs/chrono/0.4/chrono/struct.NaiveDate.html), [Axum state](https://docs.rs/axum/0.8/axum/extract/struct.State.html). This is a guided local learning implementation, **not** a claim of production readiness or exhaustively tested concurrency safety.
+**Evidence and limitations:** [Rust error conversions](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html), [SQLx Pool::begin_with](https://docs.rs/sqlx/0.9.0/sqlx/struct.Pool.html), [SQLite transactions](https://www.sqlite.org/lang_transaction.html), [Chrono NaiveDate](https://docs.rs/chrono/0.4/chrono/struct.NaiveDate.html), [Axum state](https://docs.rs/axum/0.8/axum/extract/struct.State.html). This is a local learning implementation, not a production booking system; its concurrency guarantees are limited to the SQLite transaction design described above.
 
 ---
 
@@ -2768,9 +2766,10 @@ Explain: a car can be operational but already reserved on certain dates. Checkin
 | `422` from JSON extractor | JSON structurally valid but wrong shape | Compare expected fields and types |
 | `database is locked` | SQLite concurrent writes | Revisit transaction duration and busy timeout |
 
-# Appendix D — Course quality standard and known limitations
+# Appendix D — Project scope and next steps
 
-A quality-reviewed course should ship compilable checkpoints, formatter output, tested reference projects and reproducible `Cargo.lock` files. This edition **has not passed that bar yet**; Rust/Cargo could not be run in the authoring environment. Day 7 now supplies a guided reservation service, HTTP handlers and SQLite integration tests, but the source has not been compiler-verified in this authoring environment. These are meaningful remaining gaps if your requirement is a fully independently executable workbook. Verify each lesson locally, and treat compiler errors as issues to correct, not as evidence that you misunderstood the language.
+RustRent is a local teaching application. It deliberately leaves out authentication, payments, deployments, observability and distributed reservation coordination. Its introductory email validation is not production-grade, and database errors are simplified to keep the focus on Rust, SQLx and HTTP.
 
-**Next engineering validation:** package one `day-01` through `day-07` source snapshot per checkpoint; run `cargo check`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` on each in a clean Rust 2024 environment; run HTTP smoke tests for Days 4, 5, 6 and 7. Record OS, `rustc --version`, resolved crate versions, and output logs. No such run is claimed here.
+You can strengthen the project after finishing Day 7: automate HTTP route tests, replace boxed repository errors with a typed error enum, introduce configuration for environments, and improve the database model for real rental operations. Add features incrementally, running `cargo fmt`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` after each change.
 
+To revisit a difficult lesson, retain your end-of-day source snapshots or commits. That lets you compare your code before and after the introduction of ownership, HTTP state, or SQLite without risking your completed project.
