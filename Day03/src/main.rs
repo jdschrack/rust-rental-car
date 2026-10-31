@@ -2,9 +2,14 @@ mod customer;
 mod fleet;
 mod vehicle;
 
-use customer::*;
-use fleet::{Fleet, FleetError};
-use vehicle::Vehicle;
+use customer::Customer;
+use fleet::Fleet;
+use vehicle::{Vehicle, VehicleError};
+
+fn example_vehicle() -> Result<Vehicle, VehicleError> {
+    let vehicle = Vehicle::new(3, "Honda".into(), "Civic".into(), 2024, 5000)?;
+    Ok(vehicle)
+}
 
 fn main() {
     let mut fleet = Fleet::new();
@@ -36,5 +41,10 @@ fn main() {
             Ok(c) => println!("Customer #{}: {} ({})", c.id(), c.name(), c.email()),
             Err(e) => println!("Customer rejected: {e:?}"),
         }
+    }
+
+    match example_vehicle() {
+        Ok(vehicle) => println!("example_vehicle: Ok(#{})", vehicle.display()),
+        Err(error) => println!("example vehicle: Err({error:?})"),
     }
 }
