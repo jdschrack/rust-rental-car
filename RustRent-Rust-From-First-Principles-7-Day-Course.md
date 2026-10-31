@@ -698,7 +698,7 @@ Until then, prefer concrete types. We also won’t mirror every struct with an I
 
 1. In `src/customer.rs`, add a `#[cfg(test)] mod tests { use super::*; /* tests here */ }` at the end, mirroring the vehicle tests. Test valid and invalid email; expect two more passing tests.
 2. Implement `Fleet::require(id) -> Result<&Vehicle, FleetError>` using `ok_or`.
-3. In `src/main.rs`, change the import to `use vehicle::{Vehicle, VehicleError};` and define `fn example_vehicle(rate: i64) -> Result<Vehicle, VehicleError> { Ok(Vehicle::new(3, "Honda".into(), "Civic".into(), 2025, rate)?) }` outside `main`. Inside `main`, call `example_vehicle(6500)` and `example_vehicle(-5)`, using `match` for both. Expected: one `Ok` and one `Err(InvalidRate)`.
+3. In `src/main.rs`, change the import to `use vehicle::{Vehicle, VehicleError};` and define `fn example_vehicle(rate: i64) -> Result<Vehicle, VehicleError> { Vehicle::new(3, "Honda".into(), "Civic".into(), 2025, rate) }` outside `main`. Inside `main`, call `example_vehicle(6500)` and `example_vehicle(-5)`, using `match` for both. Expected: one `Ok` and one `Err(InvalidRate)`.
 4. Explain the difference between an inherent method (`impl Vehicle`) and a trait implementation (`impl SomeTrait for Vehicle`).
 
 **Worked answer for exercise 2:**
@@ -2741,7 +2741,7 @@ Explain: a car can be operational but already reserved on certain dates. Checkin
 - **SQLx 0.9 docs** — https://docs.rs/sqlx/0.9.0/sqlx/ — pools, queries, migrations and transactions.
 
 
-## Evidence and design-decision ledger (reviewed 29 October 2026)
+## Evidence and design-decision ledger (reviewed 30 October 2026)
 
 | Claim or decision | Evidence | Course interpretation |
 |---|---|---|
