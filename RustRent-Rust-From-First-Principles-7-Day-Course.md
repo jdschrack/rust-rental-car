@@ -2739,7 +2739,7 @@ Explain: a car can be operational but already reserved on certain dates. Checkin
 - **SQLx 0.9 docs** — https://docs.rs/sqlx/0.9.0/sqlx/ — pools, queries, migrations and transactions.
 
 
-## Evidence and design-decision ledger (reviewed 30 October 2026)
+## Sources and design decisions
 
 | Claim or decision | Evidence | Course interpretation |
 |---|---|---|
