@@ -1,4 +1,4 @@
-use crate::vehicle::{self, Vehicle};
+use crate::vehicle::Vehicle;
 
 #[derive(Default, Debug)]
 pub struct Fleet {

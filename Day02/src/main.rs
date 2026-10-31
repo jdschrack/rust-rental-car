@@ -9,11 +9,11 @@ fn main() {
 
     fleet.add(
         Vehicle::new(1, "Toyota".into(), "Camry".into(), 2025, 6500)
-            .expect("seed vehicle is valid"),
+            .expect("valid example vehicle"),
     );
     fleet.add(
         Vehicle::new(2, "Jeep".into(), "Wrangler".into(), 2026, 14000)
-            .expect("seed vehicle is valid"),
+            .expect("valid example vehicle"),
     );
 
     for car in fleet.available() {

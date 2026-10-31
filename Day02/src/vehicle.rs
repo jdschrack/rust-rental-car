@@ -19,7 +19,6 @@ pub enum VehicleError {
     EmptyMake,
     EmptyModel,
     InvalidRate,
-    UnderMaintenance,
 }
 
 impl Vehicle {
