@@ -49,15 +49,17 @@ Treat the snippets as **documentation-reviewed, not compiler-certified** until a
 
 **Common Rust misunderstandings:** `pub struct` does not make its fields public; `use` does not grant visibility; `filter` returns an iterator, `find` returns an `Option`; `clone` may allocate; and `?` propagates errors but does not catch panics. We revisit these as they arise.
 
-## Final learning pass — plan and evidence
+## Revision rationale and verification
 
-The attached **ISSUES.md** reports a literal beginner run on Arch Linux with Rust/Cargo 1.99.1, Axum 0.8.9 and SQLx 0.9.0. The learner reported **12 passing tests** and successful persistence across server restarts, but found broken strict-Clippy/format gates, disappearing functionality and underspecified required exercises.
+An independent beginner's issue report documents a literal run on Arch Linux with Rust/Cargo 1.99.1, Axum 0.8.9 and SQLx 0.9.0. The learner reported **12 passing tests** and successful persistence across server restarts, but found broken strict-Clippy/format gates, disappearing functionality and underspecified required exercises.
 
 This revision targets those findings in order: **(1)** truthful verification gates and removal of unused supplied code; **(2)** continuity when modules and routes are replaced; **(3)** specific insertion points and inputs for required exercises; **(4)** accurate reservation and deletion HTTP contracts; **(5)** small conceptual comparisons and a final independent feature exercise.
 
 **Checkpoint rules:** Ordinary `cargo check` permits warnings; `cargo clippy --all-targets -- -D warnings` treats them as errors. Public methods in a binary crate may still be considered dead code. On Days 1–3, passing the prescribed build/test and observing expected warnings is sufficient; strict Clippy becomes a required gate once the library exists on Day 4. A multi-file step is not compile-ready until all modules it declares exist. Run `cargo fmt` **before** `cargo fmt --check` after adding source listings.
 
 
+
+## Learning roadmap
 
 | Day | Primary lesson | RustRent feature | Must explain before proceeding |
 |---|---|---|---|
@@ -894,9 +896,6 @@ pub struct VehicleResponse {
     rentable: bool,
 }
 
-#[derive(Debug, Serialize)]
-struct VehicleCount { count: usize }
-
 impl From<&Vehicle> for VehicleResponse {
     fn from(vehicle: &Vehicle) -> Self {
         Self {
@@ -1043,13 +1042,13 @@ Expected: `/health` returns HTTP 200 with `OK`; valid POST returns HTTP 201 and 
 
 ## 8. Exercises: defined objectives, room to discover
 
-**Exercise A (required): Count vehicles.** Starting from the working Day 4 `src/api.rs`, implement `GET /vehicles/count`. It must return JSON `{"count":2}` after creating two vehicles. Reuse `AppState` and read-only fleet access; do not create a new fleet or mutate one. **Hint:** create a small `#[derive(Serialize)]` response struct and a handler returning `Json<...>`. Add the more specific `/vehicles/count` route before Day 5 introduces `/vehicles/{id}`. Verify with `curl`.
+**Exercise A (required): Count vehicles.** The `VehicleCount` type and `count_vehicles` handler do not exist yet in the Day 4 FULL FILE; add both from the worked answer after attempting the exercise. Before completion, the Day 4 application does not expose `/vehicles/count`. Starting from the working Day 4 `src/api.rs`, implement `GET /vehicles/count`. It must return JSON `{"count":2}` after creating two vehicles. Reuse `AppState` and read-only fleet access; do not create a new fleet or mutate one. **Hint:** create a small `#[derive(Serialize)]` response struct and a handler returning `Json<...>`. Add the more specific `/vehicles/count` route before Day 5 introduces `/vehicles/{id}`. Verify with `curl`.
 
 **Exercise B (discovery): Ownership of response strings.** In the `From<&Vehicle>` implementation, attempt to hold borrowed `&str` fields in a response struct. Can that response safely outlive the mutex guard? Why does returning owned `String` avoid that lifetime requirement? Restore the original response afterward. This is deliberately exploratory: the expected outcome is an explanation, not necessarily a compiling borrowed DTO.
 
 **Exercise C (optional extension): Structured validation errors.** For a request with a zero daily rate, return `{"error":"invalid daily rate"}` alongside HTTP 400. Keep the actual validation inside `Vehicle::new`; translate the returned `VehicleError` at the HTTP boundary. Explain why that error string doesn't belong inside the domain model. Day 5 will provide a more systematic error shape.
 
-**Verification checkpoint:** stop the server and run `cargo fmt --check && cargo check --all-targets && cargo test`; then repeat the four HTTP checks above. Tell another learner what `Arc`, `Mutex`, `From<&Vehicle>`, `Json`, `State`, and `.await` each contribute. If you cannot explain one, revisit its isolated experiment before continuing.
+**Verification checkpoint:** stop the server and run `cargo fmt && cargo fmt --check && cargo check --all-targets && cargo test && cargo clippy --all-targets -- -D warnings`; then repeat the four HTTP checks above. Tell another learner what `Arc`, `Mutex`, `From<&Vehicle>`, `Json`, `State`, and `.await` each contribute. If you cannot explain one, revisit its isolated experiment before continuing.
 
 **Worked answer for Exercise A (read after attempting):**
 
@@ -1109,7 +1108,7 @@ The method protects the same invariant enforced by the constructor. This is a ma
 
 ## 2. Add lookup and update routes
 
-In `src/api.rs`, change your Axum imports to include `extract::Path`. Add:
+In `src/api.rs`, change the Axum import to include both extractors: `use axum::{extract::{Path, State}, http::StatusCode, routing::get, Json, Router};`. Add the `ChangeRate` DTO after existing DTOs and the handlers after `create_vehicle`:
 
 ```rust
 // ADD near the other DTOs
@@ -1119,11 +1118,6 @@ struct ChangeRate {
 }
 
 // ADD handlers
-async fn count_vehicles(State(state): State<AppState>) -> Result<Json<VehicleCount>, StatusCode> {
-    let vehicles = VehicleRepository::new(state.pool.clone()).list().await.map_err(internal_error)?;
-    Ok(Json(VehicleCount { count: vehicles.len() }))
-}
-
 async fn get_vehicle(
     State(state): State<AppState>,
     Path(id): Path<u32>,
@@ -1162,7 +1156,7 @@ Replace the `Router::new()` chain in `router` with:
 Router::new()
     .route("/health", get(|| async { "OK" }))
     .route("/vehicles", get(list_vehicles).post(create_vehicle))
-    .route("/vehicles/count", get(count_vehicles)) // retained Day 4 required route
+    .route("/vehicles/count", get(count_vehicles)) // retain Day 4 required route
     .route("/vehicles/{id}", get(get_vehicle).patch(change_rate))
     .with_state(state)
 ```
@@ -1203,7 +1197,7 @@ Update the `/vehicles/{id}` route to:
     get(get_vehicle).patch(change_rate).delete(delete_vehicle))
 ```
 
-This simplified Day 5 in-memory deletion is allowed because reservations haven't been persisted yet. Day 7 introduces database foreign keys and deletion rules.
+This simplified Day 5 in-memory deletion is allowed because reservations haven't been persisted yet. Day 6 introduces SQLite foreign keys and the handling of deletion conflicts.
 
 ## 4. Add customers — fully worked implementation
 
@@ -1342,7 +1336,7 @@ curl -i -X PATCH http://127.0.0.1:3000/vehicles/1 \
 curl -i -X DELETE http://127.0.0.1:3000/vehicles/1
 ```
 
-Run `cargo fmt && cargo check && cargo test`. The sequence assumes you created vehicle 1 earlier in the same running process.
+Run `cargo fmt && cargo check && cargo test && cargo clippy --all-targets -- -D warnings`. The sequence assumes you created vehicle 1 earlier in the same running process.
 
 ### Design challenge
 
@@ -1755,6 +1749,9 @@ pub struct VehicleResponse {
     rentable: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct VehicleCount { count: usize }
+
 impl From<&Vehicle> for VehicleResponse {
     fn from(vehicle: &Vehicle) -> Self {
         Self {
@@ -1815,6 +1812,11 @@ async fn list_vehicles(
     let repository = VehicleRepository::new(state.pool.clone());
     let vehicles = repository.list().await.map_err(internal_error)?;
     Ok(Json(vehicles.iter().map(VehicleResponse::from).collect()))
+}
+
+async fn count_vehicles(State(state): State<AppState>) -> Result<Json<VehicleCount>, StatusCode> {
+    let vehicles = VehicleRepository::new(state.pool.clone()).list().await.map_err(internal_error)?;
+    Ok(Json(VehicleCount { count: vehicles.len() }))
 }
 
 async fn get_vehicle(
@@ -1930,8 +1932,10 @@ async fn create_customer(
 }
 
 fn delete_error_status(error: Box<dyn std::error::Error + Send + Sync>) -> StatusCode {
-    if let Some(sqlx::Error::Database(db)) = error.downcast_ref::<sqlx::Error>() {
-        if db.code().as_deref() == Some("787") { return StatusCode::CONFLICT; }
+    if let Some(sqlx::Error::Database(db)) = error.downcast_ref::<sqlx::Error>()
+        && db.code().as_deref() == Some("787")
+    {
+        return StatusCode::CONFLICT;
     }
     internal_error(error)
 }
