@@ -96,6 +96,29 @@ impl Vehicle {
         )
     }
 
+    pub fn status(&self) -> VehicleStatus {
+        self.status
+    }
+
+    #[doc(hidden)]
+    pub(crate) fn reconstitute(
+        id: u32,
+        make: String,
+        model: String,
+        year: u16,
+        daily_rate_cents: i64,
+        status: VehicleStatus,
+    ) -> Self {
+        Self {
+            id,
+            make,
+            model,
+            year,
+            daily_rate_cents,
+            status,
+        }
+    }
+
     pub fn change_rate(&mut self, new_rate_cents: i64) -> Result<(), VehicleError> {
         if new_rate_cents <= 0 {
             return Err(VehicleError::InvalidRate);

@@ -1,8 +1,15 @@
-use rust_rent::api::{AppState, router};
+use rust_rent::{
+    api::router::{AppState, router},
+    database,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let app = router(AppState::default());
+    let database_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://rust_rent.db".to_owned());
+    let pool = database::connect(&database_url).await?;
+
+    let app = router(AppState { pool });
 
     let listener_address: String = "0.0.0.0:3000".into();
 

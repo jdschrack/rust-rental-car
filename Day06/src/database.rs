@@ -4,8 +4,8 @@ use sqlx::{
 };
 use std::str::FromStr;
 
-pub async fn connect() -> Result<SqlitePool, Box<dyn std::error::Error>> {
-    let options = SqliteConnectOptions::from_str("sqlite://rust_rent.db")?
+pub async fn connect(database_url: &str) -> Result<SqlitePool, Box<dyn std::error::Error>> {
+    let options = SqliteConnectOptions::from_str(database_url)?
         .create_if_missing(true)
         .foreign_keys(true);
 

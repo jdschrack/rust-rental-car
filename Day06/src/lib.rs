@@ -1,6 +1,5 @@
 pub mod api;
-pub mod customer;
-pub mod customers;
 pub mod database;
-pub mod fleet;
-pub mod vehicle;
+pub mod dto;
+pub mod models;
+pub mod repository;

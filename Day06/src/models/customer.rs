@@ -33,6 +33,11 @@ impl Customer {
     pub fn email(&self) -> &str {
         &self.email
     }
+
+    #[doc(hidden)]
+    pub(crate) fn reconstitute(id: u32, name: String, email: String) -> Self {
+        Self { id, name, email }
+    }
 }
 
 #[cfg(test)]
