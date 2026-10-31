@@ -17,7 +17,12 @@ impl Customer {
             return Err(CustomerError::EmptyName);
         }
 
-        if email.trim().is_empty() {
+        let name = name.trim().to_owned();
+        let email = email.trim().to_lowercase();
+        let valid = !email.contains(char::is_whitespace)
+            && matches!(email.split_once('@'),
+                Some((local, domain)) if !local.is_empty() && !domain.is_empty() && !domain.contains('@'));
+        if !valid {
             return Err(CustomerError::InvalidEmail);
         }
 
@@ -71,5 +76,23 @@ mod customer_tests {
         assert!(result.email().eq(&email.to_string()));
         assert!(result.name().eq(&name.to_string()));
         assert!(result.id().eq(&1));
+    }
+
+    #[test]
+    fn normalises_name_and_email() {
+        let c = Customer::new(1, "  Foo Bar ".into(), " Foo@Bar.COM ".into()).expect("valid");
+        assert_eq!(c.name(), "Foo Bar");
+        assert_eq!(c.email(), "foo@bar.com");
+    }
+
+    #[test]
+    fn rejects_email_without_at() {
+        for bad in ["x", "@bar.com", "foo@", "a@b@c", "foo bar@x.com"] {
+            assert_eq!(
+                Customer::new(1, "Foo".into(), bad.into()),
+                Err(CustomerError::InvalidEmail),
+                "{bad}"
+            );
+        }
     }
 }

@@ -21,14 +21,16 @@ pub(crate) async fn create_customer(
 ) -> Result<(StatusCode, Json<CustomerResponse>), StatusCode> {
     Customer::new(0, input.name.clone(), input.email.clone())
         .map_err(|_| StatusCode::BAD_REQUEST)?;
-
+    let customer =
+        Customer::new(0, input.name, input.email).map_err(|_| StatusCode::BAD_REQUEST)?;
     let repository = CustomerRepository::new(state.pool.clone());
-    // Database uniqueness protects against concurrent duplicate requests.
-    let email_for_conflict_check = input.email.clone();
-    match repository.create(input.name, input.email).await {
-        Ok(customer) => Ok((StatusCode::CREATED, Json(CustomerResponse::from(&customer)))),
+    match repository
+        .create(customer.name().to_owned(), customer.email().to_owned())
+        .await
+    {
+        Ok(saved) => Ok((StatusCode::CREATED, Json(CustomerResponse::from(&saved)))),
         Err(error) => {
-            if let Ok(true) = repository.email_exists(&email_for_conflict_check).await {
+            if let Ok(true) = repository.email_exists(customer.email()).await {
                 return Err(StatusCode::CONFLICT);
             }
             eprintln!("Customer insertion failed: {error}");

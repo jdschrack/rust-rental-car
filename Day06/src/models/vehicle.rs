@@ -86,12 +86,13 @@ impl Vehicle {
 
     pub fn display(&self) -> String {
         format!(
-            "#{} {} {} ({}), ${:.2}, {:?}",
+            "#{} {} {} ({}), ${}.{:02}, {:?}",
             self.id,
             self.make,
             self.model,
             self.year,
-            (self.daily_rate_cents / 100),
+            self.daily_rate_cents / 100,
+            self.daily_rate_cents % 100,
             self.status
         )
     }
@@ -137,9 +138,9 @@ mod vehicle_tests {
 
     #[test]
     fn add_car() {
-        if let Ok(car) = Vehicle::new(1, String::from("Toyota"), String::from("Camry"), 2025, 6500)
+        if let Ok(car) = Vehicle::new(1, String::from("Toyota"), String::from("Camry"), 2025, 6599)
         {
-            assert_eq!(car.display(), "#1 Toyota Camry (2025), $65, Ready");
+            assert_eq!(car.display(), "#1 Toyota Camry (2025), $65.99, Ready");
         }
     }
 
