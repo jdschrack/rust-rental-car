@@ -27,27 +27,14 @@ fn main() {
         None => println!("Not found"),
     }
 
-    let car2 = match fleet.require(5) {
-        Ok(car2) => car2,
-        Err(FleetError::VehicleNotFound) => {
-            println!("Vehicle with id {} not found", 5);
-            return;
+    for (id, name, email) in [
+        (1, "Avery", "avery@example.com"),
+        (2, "Jordan", "jordan@example.com"),
+        (3, "Invalid", "no-at-sign"),
+    ] {
+        match Customer::new(id, name.into(), email.into()) {
+            Ok(c) => println!("Customer #{}: {} ({})", c.id(), c.name(), c.email()),
+            Err(e) => println!("Customer rejected: {e:?}"),
         }
-    };
-
-    println!("{}", car2.display());
-
-    let customer = match Customer::new(1, "Jeremey Schrack".into(), "jdschrack@gmail.com".into()) {
-        Ok(customer) => customer,
-        Err(CustomerError::EmptyName) => {
-            println!("Invalid name");
-            return;
-        }
-        Err(CustomerError::InvalidEmail) => {
-            println!("Invalid email");
-            return;
-        }
-    };
-
-    println!("{} {}", customer.name(), customer.email());
+    }
 }
