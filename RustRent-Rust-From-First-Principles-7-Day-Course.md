@@ -1994,23 +1994,30 @@ You can also inspect the file using `sqlite3 rust_rent.db 'SELECT * FROM vehicle
 
 ---
 
-# Day 7 — Reservations, transactions and the full API design
+# Day 7 — Build the reservation API: domain rules, atomic transactions and tests
 
-**Outcome:** You learn and unit-test booking rules and understand transaction boundaries. Fully wiring the SQL-backed booking HTTP API is explicitly an advanced capstone requiring additional implementation guidance. This is the **largest module**; allow extra sessions.
+**Outcome:** Extend the **working SQL-backed Day 6 API** with `POST /reservations`, `GET /reservations/{id}`, and `POST /reservations/{id}/cancel`. Learn why a reservation is different from a vehicle, how typed domain errors cross into HTTP, and why a database transaction is necessary to prevent double booking.
 
-## 1. What makes reservations harder than vehicles?
+**Starting point:** The Day 6 `SqlitePool` is already created in `main.rs` and stored in `AppState { pool }`; vehicle and customer routes already use SQLx. Keep the Day 6 migrations and repository unchanged unless instructed below. The `reservations` table already exists; **do not create the table a second time**. This module reuses the same pool, not a new `Arc<Mutex<...>>`.
 
-A vehicle may be ready for rental yet booked during a particular week. Booking availability is therefore **a question about an interval**, not a simple status field. For a half-open interval `[start, end)` (end date excluded):
+**Success contract:** Creating a reservation returns 201; invalid date range returns 400; unknown vehicle/customer returns 404; conflicting dates or maintenance vehicle returns 409; cancel returns 200 and releases the date range; a second cancellation returns 200 (idempotent). The booking record survives a restart.
 
-```text
-Existing: Nov 1 ├────────┤ Nov 4
-Request:  Nov 4          ├─────┤ Nov 6   allowed
-Request:  Nov 3      ├──────┤ Nov 5      conflict
+## 1. Why a reservation is not a vehicle status
+
+A vehicle's `Ready` or `Maintenance` state describes whether it can operate. A booking answers **whether this vehicle is free between two dates**. One car may be reserved next week but available today. Never set a single `VehicleStatus::Rented` flag to represent bookings for all dates.
+
+We treat dates as half-open intervals `[start_date, end_date)`. A booking from 1 November until 4 November is **three billed days**. A new booking starting on 4 November is allowed.
+
+Two ranges overlap precisely when:
+
+```rust
+// ILLUSTRATION: predicate used in our domain and SQL
+existing_start < requested_end && existing_end > requested_start
 ```
 
-The overlap predicate is: `start_a < end_b && end_a > start_b`. Cancelled reservations do not block dates.
+The predicate is a **business rule**, not something the Rust compiler invents. We adopt it to make back-to-back rentals possible.
 
-## 2. Date arithmetic and pricing
+## 2. Add dates and define a validated Reservation
 
 ```bash
 cargo add chrono@0.4 --features serde
@@ -2036,36 +2043,88 @@ pub enum ReservationError {
 
 #[derive(Debug, Clone)]
 pub struct Reservation {
-    pub id: u32,
-    pub vehicle_id: u32,
-    pub customer_id: u32,
-    pub start_date: NaiveDate,
-    pub end_date: NaiveDate,
-    pub total_cents: i64,
-    pub status: ReservationStatus,
+    id: u32,
+    vehicle_id: u32,
+    customer_id: u32,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    total_cents: i64,
+    status: ReservationStatus,
 }
 
 impl Reservation {
     pub fn calculate_total(
-        rate_cents: i64,
+        daily_rate_cents: i64,
         start_date: NaiveDate,
         end_date: NaiveDate,
     ) -> Result<i64, ReservationError> {
-        if rate_cents <= 0 {
+        if daily_rate_cents <= 0 {
             return Err(ReservationError::InvalidRate);
         }
         let days = (end_date - start_date).num_days();
         if days <= 0 {
             return Err(ReservationError::InvalidDateRange);
         }
-        rate_cents.checked_mul(days)
+        daily_rate_cents
+            .checked_mul(days)
             .ok_or(ReservationError::PriceOverflow)
     }
 
-    pub fn overlaps(&self, start_date: NaiveDate, end_date: NaiveDate) -> bool {
+    pub fn new(
+        id: u32,
+        vehicle_id: u32,
+        customer_id: u32,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+        daily_rate_cents: i64,
+    ) -> Result<Self, ReservationError> {
+        let total_cents =
+            Self::calculate_total(daily_rate_cents, start_date, end_date)?;
+        Ok(Self {
+            id,
+            vehicle_id,
+            customer_id,
+            start_date,
+            end_date,
+            total_cents,
+            status: ReservationStatus::Confirmed,
+        })
+    }
+
+    // Reconstitution accepts the stored total. Historical bookings retain
+    // their original price even if the vehicle's current rate changes.
+    pub fn from_storage(
+        id: u32,
+        vehicle_id: u32,
+        customer_id: u32,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+        total_cents: i64,
+        status: ReservationStatus,
+    ) -> Result<Self, ReservationError> {
+        if end_date <= start_date {
+            return Err(ReservationError::InvalidDateRange);
+        }
+        if total_cents <= 0 {
+            return Err(ReservationError::InvalidRate);
+        }
+        Ok(Self {
+            id, vehicle_id, customer_id, start_date, end_date, total_cents, status,
+        })
+    }
+
+    pub fn id(&self) -> u32 { self.id }
+    pub fn vehicle_id(&self) -> u32 { self.vehicle_id }
+    pub fn customer_id(&self) -> u32 { self.customer_id }
+    pub fn start_date(&self) -> NaiveDate { self.start_date }
+    pub fn end_date(&self) -> NaiveDate { self.end_date }
+    pub fn total_cents(&self) -> i64 { self.total_cents }
+    pub fn status(&self) -> ReservationStatus { self.status }
+
+    pub fn overlaps(&self, start: NaiveDate, end: NaiveDate) -> bool {
         self.status == ReservationStatus::Confirmed
-            && self.start_date < end_date
-            && self.end_date > start_date
+            && self.start_date < end
+            && self.end_date > start
     }
 
     pub fn cancel(&mut self) {
@@ -2077,112 +2136,512 @@ impl Reservation {
 mod tests {
     use super::*;
 
-    #[test]
-    fn consecutive_bookings_do_not_overlap() {
-        let date = |d| NaiveDate::from_ymd_opt(2026, 11, d).unwrap();
-        let booking = Reservation {
-            id: 1, vehicle_id: 1, customer_id: 1,
-            start_date: date(1), end_date: date(4),
-            total_cents: 19500, status: ReservationStatus::Confirmed,
-        };
-        assert!(!booking.overlaps(date(4), date(7)));
-        assert!(booking.overlaps(date(3), date(6)));
+    fn date(day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 11, day).expect("test date")
     }
 
     #[test]
-    fn three_day_rate_is_exact_integer_money() {
-        let date = |d| NaiveDate::from_ymd_opt(2026, 11, d).unwrap();
-        assert_eq!(Reservation::calculate_total(6500, date(1), date(4)), Ok(19500));
+    fn price_and_adjacent_intervals() {
+        let booking = Reservation::new(1, 1, 1, date(1), date(4), 6500)
+            .expect("valid booking");
+        assert_eq!(booking.total_cents(), 19500);
+        assert!(!booking.overlaps(date(4), date(7)));
+        assert!(booking.overlaps(date(3), date(5)));
+    }
+
+    #[test]
+    fn invalid_ranges_rejected() {
+        assert!(matches!(
+            Reservation::new(1, 1, 1, date(4), date(4), 6500),
+            Err(ReservationError::InvalidDateRange)
+        ));
+    }
+
+    #[test]
+    fn cancellation_removes_conflict() {
+        let mut booking =
+            Reservation::new(1, 1, 1, date(1), date(4), 6500).unwrap();
+        booking.cancel();
+        assert!(!booking.overlaps(date(2), date(3)));
     }
 }
 ```
 
-**Notice:** The price and interval rules are domain methods and unit tests; no Axum, SQLite or network calls are involved. That is *why we retained the domain model*.
+**Why private fields?** We kept `Vehicle` private to protect its daily-rate invariant. `Reservation` also has invariants: a positive price, ordered dates and controlled status changes. Public fields would bypass those rules. `from_storage` is a separate constructor because the historical total should not be recalculated using today's rate. Its storage validation is intentionally modest for this learning project.
 
-## 3. SQL alone is not enough: concurrency
+Add `pub mod reservation;` and `pub mod reservation_service;` to `src/lib.rs`. Do so before the final compilation; the second module will be created next.
 
-Naive algorithm:
+## 3. Introducing the service: a specific job, not a mystery abstraction
 
-1. SELECT whether dates are free.
-2. If free, INSERT booking.
+A vehicle's `impl` manages one vehicle's rules. A `ReservationService` coordinates a *vehicle row*, a *customer row*, *existing bookings* and *one insertion*. That coordination crosses entity boundaries, so it is a reasonable use of a service struct. It is **not** a Rust requirement to create services for every operation.
 
-Two requests might both SELECT before either INSERTs. Use a single transaction that obtains the SQLite write lock **before** checking. SQLx 0.9 exposes `Pool::begin_with("BEGIN IMMEDIATE")`; for SQLite that creates a managed transaction. SQLx generally rolls back uncommitted transactions on drop; do not claim it perfectly handles every cancellation, disk-full or driver bug. This course is a single-database local teaching app, not a distributed booking system.
+The service owns a cloned `SqlitePool` handle, just as Day 6's repositories do. Its public methods are `create`, `find` and `cancel`.
 
-**ILLUSTRATION**, not a complete handler:
+### Typed errors and `From`
+
+The service can fail for expected business reasons (`NotFound`, `VehicleUnavailable`, `Overlap`, `InvalidDateRange`) or due to SQLx. We use a typed enum so HTTP can map distinct outcomes to status codes *without parsing strings*.
+
+Create `src/reservation_service.rs` (**FULL FILE**):
 
 ```rust
-let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-// SELECT vehicle, validate physical status and rate
-// SELECT customer, ensure exists
-// SELECT overlap with bind parameters using same transaction
-// INSERT reservation if no overlap
-// use &mut *tx for execute()/fetch_*() calls
-// on ? early return: transaction guard is dropped
-// on success:
-tx.commit().await?;
+use chrono::NaiveDate;
+use sqlx::{FromRow, SqlitePool};
+
+use crate::reservation::{
+    Reservation, ReservationError, ReservationStatus,
+};
+
+#[derive(Debug)]
+pub enum RentalError {
+    VehicleNotFound,
+    CustomerNotFound,
+    ReservationNotFound,
+    VehicleUnavailable,
+    OverlappingReservation,
+    InvalidDateRange,
+    InvalidRate,
+    PriceOverflow,
+    Database(sqlx::Error),
+    InvalidStoredData,
+}
+
+impl From<sqlx::Error> for RentalError {
+    fn from(value: sqlx::Error) -> Self {
+        Self::Database(value)
+    }
+}
+
+impl From<ReservationError> for RentalError {
+    fn from(value: ReservationError) -> Self {
+        match value {
+            ReservationError::InvalidDateRange => Self::InvalidDateRange,
+            ReservationError::InvalidRate => Self::InvalidRate,
+            ReservationError::PriceOverflow => Self::PriceOverflow,
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct StoredReservation {
+    id: i64,
+    vehicle_id: i64,
+    customer_id: i64,
+    start_date: String,
+    end_date: String,
+    total_cents: i64,
+    status: String,
+}
+
+fn decode(row: StoredReservation) -> Result<Reservation, RentalError> {
+    let id = u32::try_from(row.id).map_err(|_| RentalError::InvalidStoredData)?;
+    let vehicle_id =
+        u32::try_from(row.vehicle_id).map_err(|_| RentalError::InvalidStoredData)?;
+    let customer_id =
+        u32::try_from(row.customer_id).map_err(|_| RentalError::InvalidStoredData)?;
+    let start = NaiveDate::parse_from_str(&row.start_date, "%Y-%m-%d")
+        .map_err(|_| RentalError::InvalidStoredData)?;
+    let end = NaiveDate::parse_from_str(&row.end_date, "%Y-%m-%d")
+        .map_err(|_| RentalError::InvalidStoredData)?;
+    let status = match row.status.as_str() {
+        "confirmed" => ReservationStatus::Confirmed,
+        "cancelled" => ReservationStatus::Cancelled,
+        _ => return Err(RentalError::InvalidStoredData),
+    };
+    Reservation::from_storage(
+        id, vehicle_id, customer_id, start, end, row.total_cents, status,
+    )
+    .map_err(|_| RentalError::InvalidStoredData)
+}
+
+pub struct ReservationService {
+    pool: SqlitePool,
+}
+
+impl ReservationService {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn find(&self, id: u32) -> Result<Option<Reservation>, RentalError> {
+        let row: Option<StoredReservation> = sqlx::query_as(
+            "SELECT id, vehicle_id, customer_id, start_date, end_date, \
+             total_cents, status FROM reservations WHERE id = ?",
+        )
+        .bind(i64::from(id))
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(decode).transpose()
+    }
+
+    pub async fn create(
+        &self,
+        vehicle_id: u32,
+        customer_id: u32,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+    ) -> Result<Reservation, RentalError> {
+        if end_date <= start_date {
+            return Err(RentalError::InvalidDateRange);
+        }
+
+        // BEGIN IMMEDIATE acquires SQLite's write reservation before checking
+        // for conflicts. All subsequent queries use this SAME transaction.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+
+        let vehicle: Option<(i64, String)> = sqlx::query_as(
+            "SELECT daily_rate_cents, status FROM vehicles WHERE id = ?",
+        )
+        .bind(i64::from(vehicle_id))
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (rate, status) = vehicle.ok_or(RentalError::VehicleNotFound)?;
+        if status != "ready" {
+            return Err(RentalError::VehicleUnavailable);
+        }
+
+        let customer: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM customers WHERE id = ?")
+                .bind(i64::from(customer_id))
+                .fetch_optional(&mut *tx)
+                .await?;
+        if customer.is_none() {
+            return Err(RentalError::CustomerNotFound);
+        }
+
+        let end = end_date.format("%Y-%m-%d").to_string();
+        let start = start_date.format("%Y-%m-%d").to_string();
+        let overlap: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM reservations \
+             WHERE vehicle_id = ? AND status = 'confirmed' \
+             AND start_date < ? AND end_date > ?",
+        )
+        .bind(i64::from(vehicle_id))
+        .bind(&end)
+        .bind(&start)
+        .fetch_one(&mut *tx)
+        .await?;
+        if overlap.0 > 0 {
+            return Err(RentalError::OverlappingReservation);
+        }
+
+        // Domain constructor checks rate, dates and overflow.
+        let reservation =
+            Reservation::new(0, vehicle_id, customer_id, start_date, end_date, rate)?;
+        let inserted = sqlx::query(
+            "INSERT INTO reservations \
+             (vehicle_id, customer_id, start_date, end_date, total_cents, status) \
+             VALUES (?, ?, ?, ?, ?, 'confirmed')",
+        )
+        .bind(i64::from(vehicle_id))
+        .bind(i64::from(customer_id))
+        .bind(&start)
+        .bind(&end)
+        .bind(reservation.total_cents())
+        .execute(&mut *tx)
+        .await?;
+        let id = u32::try_from(inserted.last_insert_rowid())
+            .map_err(|_| RentalError::InvalidStoredData)?;
+
+        tx.commit().await?;
+        Reservation::new(id, vehicle_id, customer_id, start_date, end_date, rate)
+            .map_err(RentalError::from)
+    }
+
+    pub async fn cancel(&self, id: u32) -> Result<Reservation, RentalError> {
+        // Idempotent behavior: a cancelled reservation stays cancelled.
+        let result = sqlx::query(
+            "UPDATE reservations SET status = 'cancelled' WHERE id = ?",
+        )
+        .bind(i64::from(id))
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(RentalError::ReservationNotFound);
+        }
+        self.find(id)
+            .await?
+            .ok_or(RentalError::ReservationNotFound)
+    }
+}
 ```
 
-SQLite supports one writer at a time; `BEGIN IMMEDIATE` gets that lock up front. **Do not interpolate inputs with `format!` SQL.** Use literal SQL plus `.bind(...)` to protect values and work with SQLx 0.9's SQL-string safety rules.
+### Why is `?` legal for SQLx and domain errors?
 
-### Conflict SQL
+This service returns `Result<_, RentalError>`. `impl From<sqlx::Error> for RentalError` tells Rust how to turn SQLx failures into this error type. `impl From<ReservationError>` does the same for validated domain construction. Thus `?` can propagate either kind without a manual `match` at each call.
 
-```sql
-SELECT COUNT(*)
-FROM reservations
-WHERE vehicle_id = ?
-  AND status = 'confirmed'
-  AND start_date < ?   -- bind requested end
-  AND end_date > ?;   -- bind requested start
+`decode` is intentionally a *fallible* conversion of an untrusted storage row into a domain object. Its `row.map(decode).transpose()` means: no row → `Ok(None)`, valid row → `Ok(Some(...))`, invalid row → `Err(...)`.
+
+## 4. Why the transaction must include both check and insert
+
+A naïve algorithm checks availability on one connection, then inserts later. Two concurrent requests might both see the vehicle as free. SQLite permits only one writer at a time. Beginning a `BEGIN IMMEDIATE` transaction *before reading availability* serializes competing booking writers for this **local single-database** application. Both the overlap query and insert use `&mut *tx`; they must not independently use `&self.pool`.
+
+A SQLx `Transaction` rolls back when dropped without `commit`, including ordinary early `?` returns. This does **not** guarantee every cancellation, disk-full or driver edge case is handled perfectly. Keep transactions short; do not perform unrelated network operations while holding one. Binding variables with `.bind` avoids SQL injection and aligns with SQLx 0.9's literal SQL-string requirements. See [SQLx Pool](https://docs.rs/sqlx/0.9.0/sqlx/struct.Pool.html), [SQLx Transaction](https://docs.rs/sqlx/0.9.0/sqlx/struct.Transaction.html), and [SQLite transaction documentation](https://www.sqlite.org/lang_transaction.html).
+
+**Deliberate limitation:** The `cancel` method performs a single UPDATE and a subsequent SELECT rather than returning a row within one transaction. This is acceptable as a beginner demonstration of cancellation, but a stronger version would put both operations under the same transaction if a consistent snapshot is required. It also allows cancellation after the scheduled return date; real systems may need a richer lifecycle.
+
+## 5. Connect the service to the existing Axum API
+
+We reuse Day 6's `AppState { pool }`; **do not add another field or pool**. Day 6's `main.rs` and `database.rs` remain unchanged. Add the following to `src/api.rs` and update the router as directed.
+
+**ADD** these imports:
+
+```rust
+use chrono::NaiveDate;
+use crate::reservation::{Reservation, ReservationStatus};
+use crate::reservation_service::{RentalError, ReservationService};
 ```
 
-Always execute the conflict query and INSERT against the **same transaction**, not the general pool separately. Store dates as canonical ISO strings; do not use locale-dependent strings.
+**ADD** response/request representations and a boundary conversion (outside existing functions):
 
-## 4. Make the final HTTP boundary explicit
+```rust
+#[derive(Debug, Deserialize)]
+struct CreateReservation {
+    vehicle_id: u32,
+    customer_id: u32,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+}
 
-Define a request DTO with `vehicle_id`, `customer_id`, `start_date`, `end_date`, with `NaiveDate` fields (Serde via the `chrono` feature). Define a response DTO with ID, dates, status and integer `total_cents`. A handler:
+#[derive(Debug, Serialize)]
+struct ReservationResponse {
+    id: u32,
+    vehicle_id: u32,
+    customer_id: u32,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    total_cents: i64,
+    status: &'static str,
+}
 
-1. Extracts and validates JSON shape.
-2. Invokes a `ReservationService` or repository operation.
-3. Maps `InvalidDateRange` to 400, `NotFound` to 404, overlap to 409 and unexpected database failures to 500.
-4. Returns 201 and a JSON body on success.
+impl From<&Reservation> for ReservationResponse {
+    fn from(reservation: &Reservation) -> Self {
+        Self {
+            id: reservation.id(),
+            vehicle_id: reservation.vehicle_id(),
+            customer_id: reservation.customer_id(),
+            start_date: reservation.start_date(),
+            end_date: reservation.end_date(),
+            total_cents: reservation.total_cents(),
+            status: match reservation.status() {
+                ReservationStatus::Confirmed => "confirmed",
+                ReservationStatus::Cancelled => "cancelled",
+            },
+        }
+    }
+}
 
-Be precise about Axum's defaults: malformed JSON and wrong content types can have different extractor rejection status codes and bodies than your explicit domain errors, unless you implement custom rejection mapping.
+fn rental_error_status(error: RentalError) -> StatusCode {
+    match error {
+        RentalError::VehicleNotFound
+        | RentalError::CustomerNotFound
+        | RentalError::ReservationNotFound => StatusCode::NOT_FOUND,
+        RentalError::InvalidDateRange | RentalError::InvalidRate
+        | RentalError::PriceOverflow => StatusCode::BAD_REQUEST,
+        RentalError::VehicleUnavailable
+        | RentalError::OverlappingReservation => StatusCode::CONFLICT,
+        RentalError::Database(error) => {
+            eprintln!("Reservation database error: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+        RentalError::InvalidStoredData => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+```
 
-## 5. The required integration checklist
+Notice: domain errors **do not contain HTTP status codes**. This mapping belongs at the HTTP boundary. In this introductory version the error response is a bare status; structured error JSON is a useful follow-on exercise.
 
-**This final integration is an advanced capstone, **not** a guided beginner checkpoint. The course currently does **not** supply the complete SQL-backed HTTP handlers, repository writes, cancellation handler, or integration tests required to complete it independently. Do not present Day 7 as a finished working API without an additional guided implementation and passing test suite.** The fully wired SQL-backed vehicle/customer/reservation HTTP implementation is *not* silently provided in the snippets above. To call the project completed, implement and verify all these items:
+**ADD** handlers to `src/api.rs`:
 
-- [ ] The running server initializes `SqlitePool` and migrations before binding the socket.
-- [ ] Vehicle GET/POST are backed by SQLx rather than the temporary `Fleet` mutex.
-- [ ] Customer GET/POST persist customers with a unique-email constraint.
-- [ ] Reservation POST uses a write transaction that checks overlap and then inserts.
-- [ ] Invalid ranges return a client error; overlaps return 409; adjacent bookings succeed.
-- [ ] Cancellation changes reservation status and frees the interval.
-- [ ] A restart preserves all records.
-- [ ] Tests cover domain rules, HTTP 404, 400 and 409, database persistence, and concurrent booking conflict.
-- [ ] `cargo fmt --check`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` pass.
+```rust
+async fn create_reservation(
+    State(state): State<AppState>,
+    Json(input): Json<CreateReservation>,
+) -> Result<(StatusCode, Json<ReservationResponse>), StatusCode> {
+    let service = ReservationService::new(state.pool.clone());
+    let reservation = service
+        .create(input.vehicle_id, input.customer_id, input.start_date, input.end_date)
+        .await
+        .map_err(rental_error_status)?;
+    Ok((StatusCode::CREATED, Json(ReservationResponse::from(&reservation))))
+}
 
-**Why be this explicit?** Earlier course versions falsely implied that outline-level sketches were complete runnable code. This capstone is deliberately labeled as an implementation assignment rather than pretending the provided excerpts are a tested final application.
+async fn get_reservation(
+    State(state): State<AppState>,
+    Path(id): Path<u32>,
+) -> Result<Json<ReservationResponse>, StatusCode> {
+    let service = ReservationService::new(state.pool.clone());
+    let reservation = service
+        .find(id)
+        .await
+        .map_err(rental_error_status)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(ReservationResponse::from(&reservation)))
+}
 
-## 6. Test-first capstone scenarios
+async fn cancel_reservation(
+    State(state): State<AppState>,
+    Path(id): Path<u32>,
+) -> Result<Json<ReservationResponse>, StatusCode> {
+    let service = ReservationService::new(state.pool.clone());
+    let reservation = service.cancel(id).await.map_err(rental_error_status)?;
+    Ok(Json(ReservationResponse::from(&reservation)))
+}
+```
 
-Before writing your reservation handler, make a table:
+**ADD** these routes in `router` before `.with_state(state)`:
 
-| Case | Business result | HTTP |
-|---|---|---|
-| New booking, valid dates | Created | 201 |
-| End date equals start | Invalid range | 400 |
-| Unknown vehicle | Missing record | 404 |
-| Existing overlap | Conflict | 409 |
-| Begins on previous end | Allowed | 201 |
-| Cancelled previous booking | Slot available | 201 |
-| Two concurrent overlapping requests | Exactly one commits | 201 + 409 |
+```rust
+.route("/reservations", axum::routing::post(create_reservation))
+.route("/reservations/{id}", get(get_reservation))
+.route("/reservations/{id}/cancel", axum::routing::post(cancel_reservation))
+```
 
-The last case is important: happy-path tests are insufficient for transaction correctness.
+**Checkpoint:** `cargo fmt && cargo check --all-targets && cargo test`. Do not add reservation SQL to `Vehicle`, and do not modify the Day 6 pool startup: you have reused the existing application state.
 
-## 7. Reflection: architecture after seven modules
+## 6. Test the full journey over HTTP
 
-`Vehicle` and `Reservation` continue to own domain invariants. A repository maps database rows to the domain. A service coordinates multiple domain entities and a transaction. An HTTP handler translates between JSON/HTTP and the application. This is not the only valid Rust architecture; it is a **clear, simple approach for this project's size**.
+Start the server: `cargo run --bin rust-rent`. Use a **new** `DATABASE_URL` or a fresh development database to avoid collisions with prior test records.
+
+Create vehicle and customer (Day 6 requests), noting their returned IDs:
+
+```bash
+curl -i -X POST http://127.0.0.1:3000/vehicles \
+  -H 'Content-Type: application/json' \
+  -d '{"make":"Toyota","model":"Camry","year":2025,"daily_rate_cents":6500}'
+
+curl -i -X POST http://127.0.0.1:3000/customers \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Avery","email":"avery@example.com"}'
+```
+
+For the following samples, substitute the IDs returned by those two calls if they are not `1`. **Create a booking**:
+
+```bash
+curl -i -X POST http://127.0.0.1:3000/reservations \
+  -H 'Content-Type: application/json' \
+  -d '{"vehicle_id":1,"customer_id":1,"start_date":"2026-11-01","end_date":"2026-11-04"}'
+```
+
+Expected: `201 Created`, `total_cents: 19500`, `status: "confirmed"`.
+
+Attempt overlap (expect `409 Conflict`), then adjacent booking (expect `201 Created`):
+
+```bash
+curl -i -X POST http://127.0.0.1:3000/reservations \
+  -H 'Content-Type: application/json' \
+  -d '{"vehicle_id":1,"customer_id":1,"start_date":"2026-11-02","end_date":"2026-11-05"}'
+
+curl -i -X POST http://127.0.0.1:3000/reservations \
+  -H 'Content-Type: application/json' \
+  -d '{"vehicle_id":1,"customer_id":1,"start_date":"2026-11-04","end_date":"2026-11-07"}'
+```
+
+Cancel the original booking (substitute original reservation ID). Repeat the original dates: they should now be available.
+
+```bash
+curl -i -X POST http://127.0.0.1:3000/reservations/1/cancel
+curl -i http://127.0.0.1:3000/reservations/1
+```
+
+Stop and restart the server. GET the reservation again; status should remain `cancelled`. Invalid range (same start/end) returns explicit `400`; an unknown vehicle returns `404`. Malformed JSON or wrong content type may receive Axum extractor rejections instead of our domain status body.
+
+## 7. Automated service tests with an isolated SQLite database
+
+Tests must not delete or share your development database. Day 6 already added `tempfile` as a dev dependency and `database::connect(database_url)`.
+
+Create `tests/reservations.rs` (**FULL FILE**):
+
+```rust
+use chrono::NaiveDate;
+use rust_rent::{
+    database,
+    repository::{CustomerRepository, VehicleRepository},
+    reservation_service::{RentalError, ReservationService},
+};
+use tempfile::tempdir;
+
+fn date(day: u32) -> NaiveDate {
+    NaiveDate::from_ymd_opt(2026, 11, day).expect("valid date")
+}
+
+#[tokio::test]
+async fn create_overlap_adjacent_cancel_and_persist() {
+    let directory = tempdir().unwrap();
+    let url = format!("sqlite://{}", directory.path().join("test.db").display());
+    let pool = database::connect(&url).await.unwrap();
+    let vehicle = VehicleRepository::new(pool.clone())
+        .create("Toyota".into(), "Camry".into(), 2025, 6500)
+        .await.unwrap();
+    let customer = CustomerRepository::new(pool.clone())
+        .create("Avery".into(), "avery@example.com".into())
+        .await.unwrap();
+    let service = ReservationService::new(pool.clone());
+
+    let first = service
+        .create(vehicle.id(), customer.id(), date(1), date(4))
+        .await.unwrap();
+    assert_eq!(first.total_cents(), 19500);
+
+    let overlap = service
+        .create(vehicle.id(), customer.id(), date(2), date(5))
+        .await;
+    assert!(matches!(overlap, Err(RentalError::OverlappingReservation)));
+
+    let adjacent = service
+        .create(vehicle.id(), customer.id(), date(4), date(7))
+        .await.unwrap();
+    assert_ne!(first.id(), adjacent.id());
+
+    let cancelled = service.cancel(first.id()).await.unwrap();
+    assert_eq!(cancelled.status(), rust_rent::reservation::ReservationStatus::Cancelled);
+    let replacement = service
+        .create(vehicle.id(), customer.id(), date(1), date(4))
+        .await.unwrap();
+    assert_ne!(replacement.id(), first.id());
+
+    pool.close().await;
+    let reopened = database::connect(&url).await.unwrap();
+    let persisted = ReservationService::new(reopened)
+        .find(replacement.id()).await.unwrap().expect("persisted booking");
+    assert_eq!(persisted.total_cents(), 19500);
+}
+
+#[tokio::test]
+async fn simultaneous_conflicting_requests_cannot_both_commit() {
+    let directory = tempdir().unwrap();
+    let url = format!("sqlite://{}", directory.path().join("concurrent.db").display());
+    let pool = database::connect(&url).await.unwrap();
+    let vehicle = VehicleRepository::new(pool.clone())
+        .create("Honda".into(), "Civic".into(), 2025, 5000).await.unwrap();
+    let customer = CustomerRepository::new(pool.clone())
+        .create("Taylor".into(), "taylor@example.com".into()).await.unwrap();
+
+    let a = ReservationService::new(pool.clone());
+    let b = ReservationService::new(pool.clone());
+    let (left, right) = tokio::join!(
+        a.create(vehicle.id(), customer.id(), date(1), date(4)),
+        b.create(vehicle.id(), customer.id(), date(1), date(4))
+    );
+    let successful = [left, right].into_iter().filter(|result| result.is_ok()).count();
+    assert_eq!(successful, 1, "exactly one writer must book the vehicle");
+}
+```
+
+**Important distinction:** These are **service integration tests** that exercise real SQLite transactions, but not Axum HTTP routing. The `curl` checks above test the routes manually. A follow-on automated HTTP test using Axum's `Router` and `tower::ServiceExt` would be valuable and is not silently claimed here.
+
+## 8. Discovery exercises — no unspecified future services
+
+**Exercise A (required, given starting point):** In `tests/reservations.rs`, add a test that attempts a rental where `start_date == end_date`. Starting point: create a temporary pool, vehicle, customer and service as above. Expected: `Err(RentalError::InvalidDateRange)` and no inserted row. **Hint:** date validation happens before `begin_with`.
+
+**Exercise B (required):** Add a test in which `Vehicle::put_into_maintenance()` conceptually makes a car unavailable, but in SQLite you must update the vehicle row to `status = 'maintenance'` through a parameter-bound `sqlx::query` before creating the reservation. Expected: `Err(RentalError::VehicleUnavailable)`. Explain why `Vehicle` still owns the meaning of maintenance while the repository/service reads persisted status.
+
+**Exercise C (optional):** Add structured JSON errors to Axum by implementing `IntoResponse` on a transport `ApiError`. Map `RentalError` variants to 400/404/409/500 without moving HTTP status codes into the domain. Keep Axum's JSON-extraction errors separate unless you deliberately customize their rejection handling.
+
+**Exercise D (optional):** Add an HTTP integration test and verify response status codes using `tower::ServiceExt::oneshot`. This extends, rather than replaces, the supplied SQLite transaction test.
+
+**Done means:** You can explain why reservation availability is date-dependent, why `From<sqlx::Error>` enables `?`, why the transaction must acquire the write lock before checking overlap, how `AppState.pool` is reused, and why stored totals cannot be blindly recalculated. Run `cargo fmt --check`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`. **These commands have not been run by the authoring environment.**
+
+**Evidence and limitations:** [Rust error conversions](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html), [SQLx Pool::begin_with](https://docs.rs/sqlx/0.9.0/sqlx/struct.Pool.html), [SQLite transactions](https://www.sqlite.org/lang_transaction.html), [Chrono NaiveDate](https://docs.rs/chrono/0.4/chrono/struct.NaiveDate.html), [Axum state](https://docs.rs/axum/0.8/axum/extract/struct.State.html). This is a guided local learning implementation, **not** a claim of production readiness or exhaustively tested concurrency safety.
 
 ---
 
@@ -2256,7 +2715,7 @@ Explain: a car can be operational but already reserved on certain dates. Checkin
 
 # Appendix D — Course quality standard and known limitations
 
-A quality-reviewed course should ship compilable checkpoints, formatter output, tested reference projects and reproducible `Cargo.lock` files. This edition **has not passed that bar yet**; Rust/Cargo could not be run in the authoring environment. Its Day 5 customer extension and Day 7 full SQL-backed HTTP integration are explicitly labeled assignments rather than complete runnable milestones. These are meaningful remaining gaps if your requirement is a fully independently executable workbook. Verify each lesson locally, and treat compiler errors as issues to correct, not as evidence that you misunderstood the language.
+A quality-reviewed course should ship compilable checkpoints, formatter output, tested reference projects and reproducible `Cargo.lock` files. This edition **has not passed that bar yet**; Rust/Cargo could not be run in the authoring environment. Day 7 now supplies a guided reservation service, HTTP handlers and SQLite integration tests, but the source has not been compiler-verified in this authoring environment. These are meaningful remaining gaps if your requirement is a fully independently executable workbook. Verify each lesson locally, and treat compiler errors as issues to correct, not as evidence that you misunderstood the language.
 
-**Next engineering validation:** package one `day-01` through `day-07` source snapshot per checkpoint; run `cargo check`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` on each in a clean Rust 2024 environment; run HTTP smoke tests for Days 4, 5 and 7. Record OS, `rustc --version`, resolved crate versions, and output logs. No such run is claimed here.
+**Next engineering validation:** package one `day-01` through `day-07` source snapshot per checkpoint; run `cargo check`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` on each in a clean Rust 2024 environment; run HTTP smoke tests for Days 4, 5, 6 and 7. Record OS, `rustc --version`, resolved crate versions, and output logs. No such run is claimed here.
 
