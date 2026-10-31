@@ -19,7 +19,6 @@ enum VehicleError {
     EmptyMake,
     EmptyModel,
     InvalidRate,
-    UnderMaintenance,
 }
 
 impl Vehicle {
@@ -52,7 +51,7 @@ impl Vehicle {
         })
     }
 
-    fn mark_ready(&self) -> bool {
+    fn is_rentable(&self) -> bool {
         self.status == VehicleStatus::Ready
     }
 
@@ -83,11 +82,10 @@ fn main() {
     };
 
     println!("{}", car.display());
-    println!("Rentable: {}", car.mark_ready());
+    println!("Rentable: {}", car.is_rentable());
     car.put_into_maintenance();
     println!("{}", car.display());
-    println!("Rentable: {}", car.mark_ready());
-    car.mark_ready();
+    println!("Rentable: {}", car.is_rentable());
     println!("{}", car.display());
 }
 
