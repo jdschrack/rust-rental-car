@@ -1,5 +1,3 @@
-PRAGMA foreign_keys = ON;
-
 CREATE TABLE vehicles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     make TEXT NOT NULL CHECK (length(trim(make)) > 0),
