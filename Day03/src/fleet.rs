@@ -36,4 +36,11 @@ impl Fleet {
             .filter(|vehicle| vehicle.is_rentable())
             .collect()
     }
+
+    pub fn affordable(&self, maximum_cents: i64) -> Vec<&Vehicle> {
+        self.vehicles
+            .iter()
+            .filter(|v| v.daily_rate_cents() < maximum_cents)
+            .collect()
+    }
 }
