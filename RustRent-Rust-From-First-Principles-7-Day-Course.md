@@ -2773,6 +2773,55 @@ async fn simultaneous_conflicting_requests_cannot_both_commit() {
 
 **Important distinction:** These are **service integration tests** that exercise real SQLite transactions, but not Axum HTTP routing. The `curl` checks above test the routes manually. A follow-on automated HTTP test using Axum's `Router` and `tower::ServiceExt` would be valuable and is not silently claimed here.
 
+### Automated HTTP test: verify the router, not only the service
+
+The SQLite tests above exercise the service layer. Now verify that an actual Axum route reads the database. Add a test-only dependency:
+
+```bash
+cargo add tower@0.5 --dev --features util
+```
+
+Create `tests/http.rs` (**FULL FILE**):
+
+```rust
+use axum::{
+    body::{to_bytes, Body},
+    http::{Request, StatusCode},
+};
+use rust_rent::{
+    api::{router, AppState},
+    database,
+};
+use tempfile::tempdir;
+use tower::ServiceExt;
+
+#[tokio::test]
+async fn empty_vehicles_route_returns_json() {
+    let folder = tempdir().expect("temporary directory");
+    let url = format!("sqlite://{}", folder.path().join("routes.db").display());
+    let pool = database::connect(&url).await.expect("database");
+    let app = router(AppState { pool });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/vehicles")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("router response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    assert_eq!(body.as_ref(), b"[]");
+}
+```
+
+`oneshot` calls the router once in memory, with no network listener. `to_bytes` collects its response body. The database has been migrated but has no vehicles, so the expected JSON is `[]`. Run `cargo fmt && cargo test --test http`. The optional HTTP exercise below extends this example with an overlapping reservation, which should return 409.
+
 ## 8. Discovery exercises — no unspecified future services
 
 **Exercise A (required, given starting point):** In `tests/reservations.rs`, add a test that attempts a rental where `start_date == end_date`. Starting point: create a temporary pool, vehicle, customer and service as above. Expected: `Err(RentalError::InvalidDateRange)` and no inserted row. **Hint:** the validation precedes `begin_with`. Use `sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM reservations").fetch_one(&pool).await` and assert the count is zero.
@@ -2781,7 +2830,7 @@ async fn simultaneous_conflicting_requests_cannot_both_commit() {
 
 **Exercise C (optional):** Add structured JSON errors to Axum by implementing `IntoResponse` on a transport `ApiError`. Map `RentalError` variants to 400/404/409/500 without moving HTTP status codes into the domain. Keep Axum's JSON-extraction errors separate unless you deliberately customize their rejection handling.
 
-**Exercise D (optional):** Add an HTTP integration test and verify response status codes using `tower::ServiceExt::oneshot`. This extends, rather than replaces, the supplied SQLite transaction test.
+**Exercise D (optional):** Extend the worked HTTP test above to POST a reservation that overlaps an existing one, and assert HTTP 409 using `tower::ServiceExt::oneshot`. Start with the isolated test database, insert a vehicle/customer and first booking, then submit the conflicting JSON request. This complements, rather than replaces, the SQLite service tests.
 
 **Done means:** You can explain why reservation availability is date-dependent, why `From<sqlx::Error>` enables `?`, why the transaction must acquire the write lock before checking overlap, how `AppState.pool` is reused, and why stored totals cannot be blindly recalculated. **First run `cargo fmt` after creating `tests/reservations.rs`.** Then run `cargo fmt --check`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`. Complete these commands locally before marking the lesson finished.
 
