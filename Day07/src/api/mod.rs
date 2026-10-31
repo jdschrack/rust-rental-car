@@ -1,4 +1,5 @@
-pub mod customer;
+pub mod customer_service;
 pub mod errors;
+pub mod reservation_service;
 pub mod router;
-pub mod vehicle;
+pub mod vehicle_service;

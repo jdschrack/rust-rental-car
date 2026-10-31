@@ -1,5 +1,8 @@
-use crate::api::{customer::*, vehicle::*};
-use axum::{Router, routing::get};
+use crate::api::{customer_service::*, reservation_service::*, vehicle_service::*};
+use axum::{
+    Router,
+    routing::{get, post},
+};
 
 use sqlx::SqlitePool;
 
@@ -18,5 +21,8 @@ pub fn router(state: AppState) -> Router {
             get(get_vehicle).patch(change_rate).delete(delete_vehicle),
         )
         .route("/customers", get(list_customers).post(create_customer))
+        .route("/reservations", post(create_reservation))
+        .route("/reservations/{id}", get(get_reservation))
+        .route("/reservations/{id}/cancel", post(cancel_reservation))
         .with_state(state)
 }

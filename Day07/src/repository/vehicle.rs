@@ -18,11 +18,8 @@ impl TryFrom<VehicleRow> for Vehicle {
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
     fn try_from(row: VehicleRow) -> RepoResult<Self> {
-        let status = match row.status.as_str() {
-            "ready" => VehicleStatus::Ready,
-            "maintenance" => VehicleStatus::Maintenance,
-            _ => return Err(invalid_row("unknown vehicle status").into()),
-        };
+        let status = VehicleStatus::parse(&row.status)
+            .ok_or_else(|| invalid_row("unknown vehicle status"))?;
         let id = u32::try_from(row.id)?;
         let year = u16::try_from(row.year)?;
         Ok(Vehicle::reconstitute(
@@ -83,12 +80,13 @@ impl VehicleRepository {
     ) -> RepoResult<Vehicle> {
         let result = sqlx::query(
             "INSERT INTO vehicles (make, model, year, daily_rate_cents, status) \
-             VALUES (?, ?, ?, ?, 'ready')",
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&make)
         .bind(&model)
         .bind(i64::from(year))
         .bind(rate)
+        .bind(VehicleStatus::Ready.as_str())
         .execute(&self.pool)
         .await?;
         let id = u32::try_from(result.last_insert_rowid())?;
@@ -100,6 +98,18 @@ impl VehicleRepository {
     pub async fn change_rate(&self, id: u32, rate: i64) -> RepoResult<Option<Vehicle>> {
         let result = sqlx::query("UPDATE vehicles SET daily_rate_cents = ? WHERE id = ?")
             .bind(rate)
+            .bind(i64::from(id))
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.find(id).await
+    }
+
+    pub async fn set_status(&self, id: u32, status: VehicleStatus) -> RepoResult<Option<Vehicle>> {
+        let result = sqlx::query("UPDATE vehicles SET status = ? WHERE id = ?")
+            .bind(status.as_str())
             .bind(i64::from(id))
             .execute(&self.pool)
             .await?;

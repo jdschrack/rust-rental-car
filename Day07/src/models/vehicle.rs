@@ -4,6 +4,23 @@ pub enum VehicleStatus {
     Maintenance,
 }
 
+impl VehicleStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Maintenance => "maintenance",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "ready" => Some(Self::Ready),
+            "maintenance" => Some(Self::Maintenance),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Vehicle {
     id: u32,
