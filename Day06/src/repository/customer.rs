@@ -8,9 +8,13 @@ struct CustomerRow {
     email: String,
 }
 
-fn customer_from_row(row: CustomerRow) -> RepoResult<Customer> {
-    let id = u32::try_from(row.id)?;
-    Ok(Customer::reconstitute(id, row.name, row.email))
+impl TryFrom<CustomerRow> for Customer {
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+
+    fn try_from(row: CustomerRow) -> RepoResult<Self> {
+        let id = u32::try_from(row.id)?;
+        Ok(Customer::reconstitute(id, row.name, row.email))
+    }
 }
 
 pub struct CustomerRepository {
@@ -28,7 +32,7 @@ impl CustomerRepository {
                 .fetch_all(&self.pool)
                 .await?;
 
-        rows.into_iter().map(customer_from_row).collect()
+        rows.into_iter().map(Customer::try_from).collect()
     }
 
     pub async fn find(&self, id: u32) -> RepoResult<Option<Customer>> {
@@ -38,7 +42,7 @@ impl CustomerRepository {
                 .fetch_optional(&self.pool)
                 .await?;
 
-        row.map(customer_from_row).transpose()
+        row.map(Customer::try_from).transpose()
     }
 
     pub async fn create(&self, name: String, email: String) -> RepoResult<Customer> {

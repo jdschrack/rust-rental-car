@@ -1,5 +1,5 @@
 use crate::api::{customer::*, vehicle::*};
-use axum::{Router, http::StatusCode, routing::get};
+use axum::{Router, routing::get};
 
 use sqlx::SqlitePool;
 
@@ -11,29 +11,12 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { "OK" }))
-        .route("/vehicles", get(list_vehicles))
+        .route("/vehicles", get(list_vehicles).post(create_vehicle))
         .route("/vehicles/count", get(count_vehicles))
         .route(
             "/vehicles/{id}",
-            get(get_vehicle)
-                .patch(change_rate)
-                .post(create_vehicle)
-                .delete(delete_vehicle),
+            get(get_vehicle).patch(change_rate).delete(delete_vehicle),
         )
         .route("/customers", get(list_customers).post(create_customer))
         .with_state(state)
-}
-
-pub(crate) fn internal_error(error: Box<dyn std::error::Error + Send + Sync>) -> StatusCode {
-    eprintln!("Database or row conversion error: {error}");
-    StatusCode::INTERNAL_SERVER_ERROR
-}
-
-pub(crate) fn delete_error_status(error: Box<dyn std::error::Error + Send + Sync>) -> StatusCode {
-    if let Some(sqlx::Error::Database(db)) = error.downcast_ref::<sqlx::Error>()
-        && db.is_foreign_key_violation()
-    {
-        return StatusCode::CONFLICT;
-    }
-    internal_error(error)
 }

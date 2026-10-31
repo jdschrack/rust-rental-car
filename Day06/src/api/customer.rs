@@ -1,5 +1,5 @@
 use crate::{
-    api::router::{AppState, internal_error},
+    api::{errors, router::AppState},
     dto::customer_dto::*,
     models::customer::Customer,
     repository::customer::*,
@@ -11,7 +11,7 @@ pub(crate) async fn list_customers(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<CustomerResponse>>, StatusCode> {
     let repository = CustomerRepository::new(state.pool.clone());
-    let customers = repository.list().await.map_err(internal_error)?;
+    let customers = repository.list().await.map_err(errors::internal_error)?;
     Ok(Json(customers.iter().map(CustomerResponse::from).collect()))
 }
 
