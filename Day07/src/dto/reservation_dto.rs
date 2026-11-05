@@ -48,6 +48,11 @@ pub fn rental_error_status(error: RentalError) -> StatusCode {
             StatusCode::CONFLICT
         }
         RentalError::Database(error) => {
+            tracing::error!(
+                operation = "reservation_dto",
+                error.category = "database",
+                "database operation failed"
+            );
             eprintln!("Reservation database error: {error}");
             StatusCode::INTERNAL_SERVER_ERROR
         }
