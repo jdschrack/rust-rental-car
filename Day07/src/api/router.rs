@@ -3,6 +3,7 @@ use axum::{
     Router,
     routing::{get, post},
 };
+use axum_tracing_opentelemetry::middleware::{OtelAxumLayer, OtelInResponseLayer};
 
 use sqlx::SqlitePool;
 
@@ -25,4 +26,6 @@ pub fn router(state: AppState) -> Router {
         .route("/reservations/{id}", get(get_reservation))
         .route("/reservations/{id}/cancel", post(cancel_reservation))
         .with_state(state)
+        .layer(OtelInResponseLayer::default())
+        .layer(OtelAxumLayer::default())
 }

@@ -1,9 +1,7 @@
 use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
 use opentelemetry_otlp::SpanExporter;
 use opentelemetry_sdk::{Resource, propagation::TraceContextPropagator, trace::SdkTracerProvider};
-use tracing_subscriber::{
-    EnvFilter, Layer, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt,
-};
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 pub struct TelemetryGuard {
     provider: SdkTracerProvider,
@@ -50,7 +48,7 @@ pub fn init() -> Result<TelemetryGuard, Box<dyn std::error::Error + Send + Sync>
 
     let otel_layer = tracing_opentelemetry::layer()
         .with_tracer(tracer)
-        .with_filter(LevelFilter::INFO);
+        .with_filter(EnvFilter::new("info.otel.tracing=trace"));
 
     tracing_subscriber::registry()
         .with(log_layer)
