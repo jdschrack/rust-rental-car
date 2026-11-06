@@ -1,6 +1,10 @@
 use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
 use opentelemetry_otlp::SpanExporter;
-use opentelemetry_sdk::{Resource, propagation::TraceContextPropagator, trace::SdkTracerProvider};
+use opentelemetry_sdk::{
+    Resource, error::OTelSdkError, metrics::SdkMeterProvider, propagation::TraceContextPropagator,
+    trace::SdkTracerProvider,
+};
+use prometheus::Registry;
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 pub struct TelemetryGuard {
@@ -56,4 +60,15 @@ pub fn init() -> Result<TelemetryGuard, Box<dyn std::error::Error + Send + Sync>
         .init();
 
     Ok(TelemetryGuard { provider })
+}
+
+pub fn init_meter_provider(registry: Registry) -> Result<SdkMeterProvider, OTelSdkError> {
+    let exporter = opentelemetry_prometheus::exporter()
+        .with_registry(registry)
+        .build()?;
+
+    let provider = SdkMeterProvider::builder().with_reader(exporter).build();
+
+    opentelemetry::global::set_meter_provider(provider.clone());
+    Ok(provider)
 }

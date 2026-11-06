@@ -1,6 +1,6 @@
 use crate::{models::customer::Customer, repository::repo_tools::*};
 use sqlx::{FromRow, SqlitePool};
-use tracing::{Instrument, info_span, instrument};
+use tracing::instrument;
 #[derive(FromRow)]
 struct CustomerRow {
     id: i64,

@@ -5,10 +5,10 @@ use axum::{
     http::StatusCode,
     response::{Html, IntoResponse, Response},
 };
-#[cfg(feature = "metrics")]
 use prometheus::{Registry, TextEncoder};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use thiserror;
 
 #[derive(Clone, Default)]
 pub struct ReadinessProbe {
@@ -46,7 +46,6 @@ impl StartupProbe {
 
 #[derive(Clone)]
 struct AdminState {
-    #[cfg(feature = "metrics")]
     registry: Arc<Registry>,
     readiness: Option<ReadinessProbe>,
     startup: Option<StartupProbe>,
@@ -92,13 +91,12 @@ async fn root_handler() -> Html<&'static str> {
     )
 }
 
-pub(crate) fn admin_app(
-    #[cfg(feature = "metrics")] registry: Registry,
+pub fn admin_app(
+    registry: Registry,
     readiness: Option<ReadinessProbe>,
     startup: Option<StartupProbe>,
 ) -> Router {
     let state = AdminState {
-        #[cfg(feature = "metrics")]
         registry: Arc::new(registry),
         readiness,
         startup,
@@ -109,13 +107,11 @@ pub(crate) fn admin_app(
         .route("/ready", get(ready_handler))
         .route("/started", get(started_handler));
 
-    #[cfg(feature = "metrics")]
     let router = router.route("/metrics", get(metrics_handler));
 
     router.with_state(state)
 }
 
-#[cfg(feature = "metrics")]
 async fn metrics_handler(State(state): State<AdminState>) -> Result<String, AdminServerError> {
     let encoder = TextEncoder::new();
     let mut buffer = String::new();
@@ -124,13 +120,11 @@ async fn metrics_handler(State(state): State<AdminState>) -> Result<String, Admi
 }
 
 #[derive(thiserror::Error, Debug)]
-#[cfg(feature = "metrics")]
 enum AdminServerError {
     #[error("Prometheus error: {0}")]
     Prometheus(#[from] prometheus::Error),
 }
 
-#[cfg(feature = "metrics")]
 impl IntoResponse for AdminServerError {
     fn into_response(self) -> Response {
         tracing::error!("Internal error in admin server: {}", self);

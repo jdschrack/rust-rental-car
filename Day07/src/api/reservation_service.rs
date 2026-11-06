@@ -1,6 +1,7 @@
 use crate::{
     api::router::AppState,
     dto::reservation_dto::{CreateReservation, ReservationResponse, rental_error_status},
+    internal::metrics::{Operation, Outcome},
     repository::reservation::ReservationRepository,
 };
 
@@ -22,13 +23,26 @@ pub(crate) async fn create_reservation(
             input.start_date,
             input.end_date,
         )
-        .await
-        .map_err(rental_error_status)?;
+        .await;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(ReservationResponse::from(&reservation)),
-    ))
+    match reservation {
+        Ok(reservation) => {
+            state
+                .metrics
+                .record_reservation(Operation::Create, Outcome::Ok);
+            Ok((
+                StatusCode::CREATED,
+                Json(ReservationResponse::from(&reservation)),
+            ))
+        }
+        Err(err) => {
+            state
+                .metrics
+                .record_reservation(Operation::Create, Outcome::Rejected);
+            tracing::error!("unable to create reservation");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 pub(crate) async fn get_reservation(

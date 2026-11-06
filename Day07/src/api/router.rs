@@ -1,4 +1,7 @@
-use crate::api::{customer_service::*, reservation_service::*, vehicle_service::*};
+use crate::{
+    api::{customer_service::*, reservation_service::*, vehicle_service::*},
+    internal::metrics::Metrics,
+};
 use axum::{
     Router,
     routing::{get, post},
@@ -10,6 +13,7 @@ use sqlx::SqlitePool;
 #[derive(Clone)]
 pub struct AppState {
     pub pool: SqlitePool,
+    pub metrics: Metrics,
 }
 
 pub fn router(state: AppState) -> Router {
