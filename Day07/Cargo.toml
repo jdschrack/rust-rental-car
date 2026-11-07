@@ -8,6 +8,7 @@ axum = "0.8.9"
 axum-otel-metrics = "0.14.1"
 axum-tracing-opentelemetry = "0.42.1"
 chrono = { version = "0.4.45", features = ["serde"] }
+dotenvy = "0.15.7"
 opentelemetry = {version = "0.33.1", features = ["trace"]}
 opentelemetry-otlp = "0.33.1"
 opentelemetry-prometheus = "0.33.1"

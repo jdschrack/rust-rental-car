@@ -1,3 +1,4 @@
+use crate::internal::config::Config;
 use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
 use opentelemetry_otlp::SpanExporter;
 use opentelemetry_sdk::{
@@ -19,22 +20,17 @@ impl TelemetryGuard {
     }
 }
 
-pub fn init() -> Result<TelemetryGuard, Box<dyn std::error::Error + Send + Sync>> {
+pub fn init(config: &Config) -> Result<TelemetryGuard, Box<dyn std::error::Error + Send + Sync>> {
     global::set_text_map_propagator(TraceContextPropagator::new());
 
     let exporter = SpanExporter::builder().with_http().build()?;
 
-    let mut resource = Resource::builder().with_attributes([
-        KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
-        KeyValue::new(
-            "deployment.environment.name",
-            std::env::var("DEPLOYMENT_ENV").unwrap_or_else(|_| "local".into()),
-        ),
-    ]);
-
-    if std::env::var_os("OTEL_SERVICE_NAME").is_none() {
-        resource = resource.with_service_name("reservation-api");
-    }
+    let resource = Resource::builder()
+        .with_service_name(config.service_name.clone())
+        .with_attributes([
+            KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
+            KeyValue::new("deployment.environment.name", config.deployment_env.clone()),
+        ]);
 
     let provider = SdkTracerProvider::builder()
         .with_batch_exporter(exporter)
@@ -48,11 +44,13 @@ pub fn init() -> Result<TelemetryGuard, Box<dyn std::error::Error + Send + Sync>
         .json()
         .with_current_span(true)
         .with_span_list(false)
-        .with_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")));
+        .with_filter(
+            EnvFilter::try_new(&config.log_filter).unwrap_or_else(|_| EnvFilter::new("info")),
+        );
 
     let otel_layer = tracing_opentelemetry::layer()
         .with_tracer(tracer)
-        .with_filter(EnvFilter::new("info.otel.tracing=trace"));
+        .with_filter(EnvFilter::new("info,otel::tracing=trace"));
 
     tracing_subscriber::registry()
         .with(log_layer)

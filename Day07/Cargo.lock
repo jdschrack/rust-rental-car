@@ -1559,6 +1559,7 @@ dependencies = [
  "axum-otel-metrics",
  "axum-tracing-opentelemetry",
  "chrono",
+ "dotenvy",
  "http-body-util",
  "opentelemetry 0.33.1",
  "opentelemetry-otlp",
