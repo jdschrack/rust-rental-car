@@ -2,9 +2,9 @@ use crate::models::{
     reservation::{Reservation, ReservationError, ReservationStatus},
     vehicle::VehicleStatus,
 };
-
 use chrono::NaiveDate;
 use sqlx::{FromRow, SqlitePool};
+use tracing::{Instrument, info_span, instrument};
 
 #[derive(Debug)]
 pub enum RentalError {
@@ -82,6 +82,7 @@ impl ReservationRepository {
         Self { pool }
     }
 
+    #[instrument(skip_all, name="reservations.find", fields(operation="reservations_find", db.system="sqlite"))]
     pub async fn find(&self, id: u32) -> Result<Option<Reservation>, RentalError> {
         let row: Option<ReservationRow> = sqlx::query_as(
             "SELECT id, vehicle_id, customer_id, start_date, 
@@ -96,6 +97,7 @@ impl ReservationRepository {
         row.map(Reservation::try_from).transpose()
     }
 
+    #[instrument(skip_all, name="reservations.create", fields(operation="reservations_create", db.system="sqlite"))]
     pub async fn create(
         &self,
         vehicle_id: u32,
@@ -107,7 +109,11 @@ impl ReservationRepository {
             return Err(RentalError::InvalidDateRange);
         }
 
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .instrument(info_span!("db.acquire_write_lock"))
+            .await?;
 
         let vehicle: Option<(i64, String)> =
             sqlx::query_as("SELECT daily_rate_cents, status FROM vehicles WHERE id = ?")
@@ -166,6 +172,7 @@ impl ReservationRepository {
             .map_err(RentalError::from)
     }
 
+    #[instrument(skip_all, name="reservations.cancel", fields(operation="reservations_cancel", db.system="sqlite"))]
     pub async fn cancel(&self, id: u32) -> Result<Reservation, RentalError> {
         let result = sqlx::query("UPDATE reservations SET status = ? WHERE id = ?")
             .bind(ReservationStatus::Cancelled.as_str())

@@ -33,7 +33,10 @@ pub(crate) async fn create_customer(
             if let Ok(true) = repository.email_exists(customer.email()).await {
                 return Err(StatusCode::CONFLICT);
             }
-            eprintln!("Customer insertion failed: {error}");
+            tracing::error!(
+                operation = "create_customer",
+                "Customer insertion failed: {error}"
+            );
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

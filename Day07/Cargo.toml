@@ -5,12 +5,28 @@ edition = "2024"
 
 [dependencies]
 axum = "0.8.9"
+axum-otel-metrics = "0.14.1"
+axum-tracing-opentelemetry = "0.42.1"
 chrono = { version = "0.4.45", features = ["serde"] }
+dotenvy = "0.15.7"
+opentelemetry = {version = "0.33.1", features = ["trace"]}
+opentelemetry-otlp = "0.33.1"
+opentelemetry-prometheus = "0.33.1"
+opentelemetry-semantic-conventions = "0.33.1"
+opentelemetry-zipkin = "0.33.0"
+opentelemetry_sdk = "0.33.1"
+prometheus = {version = "0.14.0", features=["process"], default-features = false}
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "derive"] }
+thiserror = {version = "2.0.21", default-features = false}
 tokio = { version = "1.54.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-opentelemetry = "0.34.0"
+tracing-subscriber = {version = "0.3.23", features = ["env-filter", "json", "registry"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
 tower = { version = "0.5", features = ["util"] }
+http-body-util = {version = "0.1.5"}

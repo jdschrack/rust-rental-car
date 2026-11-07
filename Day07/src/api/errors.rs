@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 
 pub(crate) fn internal_error(error: Box<dyn std::error::Error + Send + Sync>) -> StatusCode {
-    eprintln!("Database or row conversion error: {error}");
+    tracing::error!(error.category = "database", error.detail = %error, "request failed");
     StatusCode::INTERNAL_SERVER_ERROR
 }
 
